@@ -1,0 +1,104 @@
+[build-system]
+build-backend = "hatchling.build"
+requires = ["hatchling>=1.27"]
+
+[project]
+name = "dounai-input"
+version = "0.1.0"
+description = "Privacy-first multimodal input gateway for the Dounai AI companion"
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.11"
+authors = [{ name = "Dounai Input contributors" }]
+keywords = ["multimodal", "voiceprint", "asr", "privacy", "ai-companion"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: Web Environment",
+  "Framework :: FastAPI",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Multimedia :: Sound/Audio :: Speech",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+  "fastapi>=0.115,<1",
+  "httpx>=0.28,<1",
+  "numpy>=2.0,<3",
+  "pydantic>=2.9,<3",
+  "python-dotenv>=1.0,<2",
+  "python-multipart>=0.0.17,<1",
+  "uvicorn[standard]>=0.32,<1",
+]
+
+[project.optional-dependencies]
+local-asr = [
+  "faster-whisper>=1.1,<2",
+  "huggingface-hub>=0.27,<2",
+  # PyAV 19 removed the metadata_errors kwarg that faster-whisper 1.2.x still
+  # passes to av.open. Keep decoding on a compatible PyAV until upstream fixes it.
+  "av>=11,<19",
+]
+dev = [
+  "build>=1.2,<2",
+  "pytest>=8.3,<9",
+  "pytest-cov>=6,<8",
+  "ruff>=0.9,<1",
+]
+
+[project.scripts]
+dounai-input = "dounai_input.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/zhipianxiaokonglong/Dounai_input"
+Repository = "https://github.com/zhipianxiaokonglong/Dounai_input"
+Issues = "https://github.com/zhipianxiaokonglong/Dounai_input/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/dounai_input"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+  "/src",
+  "/tests",
+  "/docs",
+  "/examples",
+  "/README.md",
+  "/LICENSE",
+  "/SECURITY.md",
+  "/CHANGELOG.md",
+  "/pyproject.toml",
+  "/.env.example",
+  "/dounai.example.toml",
+]
+
+[tool.pytest.ini_options]
+addopts = "-ra --strict-markers"
+testpaths = ["tests"]
+filterwarnings = [
+  "error::DeprecationWarning",
+  "ignore:Using `httpx` with `starlette.testclient` is deprecated:UserWarning",
+]
+
+[tool.bandit]
+skips = ["B105"]
+exclude_dirs = ["tests"]
+
+[tool.coverage.run]
+branch = true
+source = ["dounai_input"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+ignore = ["E501", "RUF001", "RUF002", "RUF003"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101"]

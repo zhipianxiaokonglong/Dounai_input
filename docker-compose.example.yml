@@ -1,0 +1,35 @@
+# Example only. Copy to docker-compose.yml and set values in a local .env file.
+# Never commit the resulting .env or any real token.
+#
+# Do not use this file unchanged in production: configure TLS at a reverse proxy,
+# a non-loopback public URL, and data directory ownership.
+
+services:
+  dounai-input:
+    build:
+      context: .
+      args:
+        INSTALL_LOCAL_ASR: "0"
+    image: dounai-input:0.1.0
+    user: "10001:10001"
+    environment:
+      DOUNAI_API_TOKEN: "${DOUNAI_API_TOKEN:?set DOUNAI_API_TOKEN}"
+      DOUNAI_PUBLIC_BASE_URL: "${DOUNAI_PUBLIC_BASE_URL:-http://127.0.0.1:8000}"
+      DOUNAI_DATA_DIR: /app/data
+      DASHSCOPE_API_KEY: "${DASHSCOPE_API_KEY:-}"
+      OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
+      DOUNAI_ALLOW_REMOTE_FALLBACK: "0"
+    ports:
+      - "127.0.0.1:8000:8000"
+    volumes:
+      - ./data:/app/data
+    restart: unless-stopped
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import json,urllib.request; r=urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=3); assert json.load(r)['status']=='ok'"
+      interval: 30s
+      timeout: 5s
+      retries: 3

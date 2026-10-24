@@ -1,0 +1,18 @@
+[build-system]
+build-backend = "hatchling.build"
+requires = ["hatchling>=1.27"]
+
+[project]
+name = "dounai-provider-example"
+version = "0.1.0"
+description = "Example third-party provider plugin for Dounai Input Gateway"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+dependencies = ["dounai-input>=0.1.0", "httpx>=0.28,<1"]
+
+[project.entry-points."dounai_input.providers"]
+example-http = "dounai_provider_example:ExampleHttpProvider"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/dounai_provider_example"]

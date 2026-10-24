@@ -1,0 +1,84 @@
+# 豆奶输入层配置示例
+#
+# 复制为 dounai.toml 后修改。dounai.toml 被 .gitignore 排除，不会提交。
+# 密钥不要写在这里：所有密钥都通过环境变量读取，文件名见各 provider 的
+# api_key_env / token_env。不要提交任何真实密钥或 .env 文件。
+
+data_dir = "data"
+
+[server]
+host = "127.0.0.1"
+port = 8000
+public_base_url = "http://127.0.0.1:8000"
+# 绑定 0.0.0.0 等非回环地址前，必须设置 DOUNAI_API_TOKEN。
+allow_insecure_bind = false
+# 额外的插件目录，多个路径使用系统分隔符（Windows 为 ;，POSIX 为 :）。
+# plugin_path = "./plugins"
+
+[input]
+max_text_chars = 20000
+max_image_bytes = 15728640
+max_audio_bytes = 26214400
+
+[privacy]
+# 仅作为首次启动的默认值；之后以 Web/API 的运行时开关为准。
+voiceprint_enabled = false
+wake_phrase = "你好豆奶"
+wake_phrase_required = true
+voiceprint_threshold = 0.82
+retention_hours = 72
+consent_policy_version = "1.0"
+
+[processing]
+provider_timeout_seconds = 60
+provider_failure_cooldown_seconds = 30
+session_context_events = 3
+# 默认禁止“本地模型失败后自动把音频发往云端”。如明确接受该数据流向，
+# 并已向用户披露，才可设为 true。
+allow_remote_fallback = false
+
+[models]
+active = "offline"
+fallback = ["local-whisper", "dashscope"]
+
+[providers.offline]
+enabled = true
+
+[providers.local-whisper]
+enabled = true
+model = "small"
+# auto / cpu / cuda
+device = "auto"
+# int8 / float16 / float32
+compute_type = "int8"
+language = "zh"
+
+[providers.dashscope]
+enabled = true
+api_key_env = "DASHSCOPE_API_KEY"
+# 如果控制台要求 Workspace 专属域名，替换为
+# https://{WorkspaceId}.cn-beijing.maas.aliyuncs.com/compatible-mode/v1
+base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+asr_model = "qwen3-asr-flash"
+omni_model = "qwen3.8-omni-flash"
+language = "zh"
+timeout_seconds = 60
+
+[providers.openai]
+enabled = true
+api_key_env = "OPENAI_API_KEY"
+base_url = "https://api.openai.com/v1"
+asr_model = "gpt-4o-transcribe"
+language = "zh"
+timeout_seconds = 60
+
+[providers.custom-http]
+enabled = false
+# 必须实现 multipart POST，返回 {"text": "..."}。
+endpoint = "http://127.0.0.1:9000/transcribe"
+token_env = "DOUNAI_CUSTOM_HTTP_TOKEN"
+text_field = "text"
+model = "my-private-asr"
+# 自有服务运行在同一台设备/内网时可设为 local；默认按远程处理。
+privacy = "remote"
+timeout_seconds = 30

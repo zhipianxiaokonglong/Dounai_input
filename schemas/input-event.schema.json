@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/zhipianxiaokonglong/Dounai_input/schemas/input-event.schema.json",
+  "title": "DounaiInputEvent",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["event_id", "timestamp", "modality", "content", "metadata"],
+  "properties": {
+    "event_id": { "type": "string", "format": "uuid" },
+    "timestamp": { "type": "string", "format": "date-time" },
+    "modality": { "enum": ["text", "image", "audio"] },
+    "content": { "type": "string", "minLength": 1 },
+    "metadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["asr_text", "voiceprint_event", "model_capabilities"],
+      "properties": {
+        "asr_text": { "type": "string" },
+        "voiceprint_event": { "enum": ["wakeup", "none"] },
+        "model_capabilities": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "enum": ["text", "image", "audio"] }
+        }
+      }
+    }
+  }
+}
