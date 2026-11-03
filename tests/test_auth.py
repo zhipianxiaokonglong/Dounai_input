@@ -88,6 +88,25 @@ def test_provider_endpoint_never_returns_api_keys(client, monkeypatch: pytest.Mo
     assert "DASHSCOPE_API_KEY" not in response.text
 
 
+def test_media_base64_requires_token(settings) -> None:
+    settings = replace(settings, api_token="test-token-value")
+    with TestClient(build_app(settings)) as client:
+        upload = client.post(
+            "/v1/inputs/image",
+            files={"file": ("pixel.png", b"\x89PNG\r\n\x1a\n" + b"0" * 32, "image/png")},
+            headers={"Authorization": "Bearer test-token-value"},
+        )
+        media_id = upload.json()["content"].rsplit("/", 1)[-1]
+        assert client.get(f"/v1/media/{media_id}/base64").status_code == 401
+        assert (
+            client.get(
+                f"/v1/media/{media_id}/base64",
+                headers={"Authorization": "Bearer test-token-value"},
+            ).status_code
+            == 200
+        )
+
+
 def test_oversized_content_length_is_rejected_before_parsing(client) -> None:
     response = client.post(
         "/v1/inputs/text",

@@ -8,7 +8,7 @@
 
 本仓库可独立运行、独立演示、独立测试，不依赖任何其他业务模块。
 
-- 文字 / 图像 / 语音统一事件契约，**严格**只输出约定字段
+- 文字 / 图像 / 语音统一事件契约（v1.1），**严格**只输出约定字段；ASR 不可用有显式状态
 - 统一 provider 适配层，声明能力（text / image / audio），插件化安装与卸载
 - 可选本地模型：faster-whisper 完全离线转写，权重按需下载、不入库
 - 第三方推荐：阿里云百炼 **Qwen3-ASR-Flash**（BYOK，用户自备密钥）
@@ -16,6 +16,7 @@
 - 运行时切换模型，会话上下文保留；失败时按能力与隐私边界降级
 - 明确授权、隐私开关、数据导出、声纹删除、全部个人数据删除
 - 单文件 SQLite、零 Node 构建依赖的 Web 控制台、完整用户与开发文档
+- 跨机会话/媒体交付：响应头回传会话，媒体可用鉴权 base64 接口读取
 
 ## 快速开始
 
@@ -53,11 +54,16 @@ curl -X POST http://127.0.0.1:8000/v1/inputs/text \
   "content": "今天有点累，想找人说说话。",
   "metadata": {
     "asr_text": "",
+    "asr_status": "not_applicable",
     "voiceprint_event": "none",
     "model_capabilities": ["text", "image", "audio"]
   }
 }
 ```
+
+`asr_status` 是契约 v1.1 新增字段：`completed` / `empty` / `unavailable` /
+`not_applicable`。旧 v1.0 消费方仍可解析事件；新消费方必须读取它，禁止在
+`asr_status` 不是 `completed` 时把 `asr_text` 当作有效文本。
 
 ## 三种形态，一个出口
 
@@ -65,7 +71,12 @@ curl -X POST http://127.0.0.1:8000/v1/inputs/text \
 | --- | --- | --- |
 | 文字 | `POST /v1/inputs/text` JSON | 用户原文 |
 | 图像 | `POST /v1/inputs/image` multipart | 受控媒体 URL |
-| 语音 | `POST /v1/inputs/audio` multipart | 受控媒体 URL，转写结果在 `metadata.asr_text` |
+| 语音 | `POST /v1/inputs/audio` multipart | 受控媒体 URL，转写结果与状态在 `metadata.asr_text` / `metadata.asr_status` |
+
+会话标识通过响应头 `X-Dounai-Session` 稳定回传（事件体不加重字段，保持 v1.0
+兼容）。跨机或云端消费方无法访问 `content` URL 时，使用已鉴权的
+`GET /v1/media/{id}/base64` 或 `GET /v1/events/{id}/media?include_base64=true`
+直接取得字节。
 
 完整接口、错误码与 curl 示例见 [docs/api.md](docs/api.md)，机器可读契约见 `GET /v1/contract`。
 

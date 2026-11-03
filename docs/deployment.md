@@ -45,12 +45,12 @@ export DOUNAI_API_TOKEN="$(dounai-input token)"
 ### 3.1 构建与运行
 
 ```bash
-docker build -t dounai-input:0.1.0 .
+docker build -t dounai-input:0.1.1 .
 docker run --rm -p 127.0.0.1:8000:8000 \
   -e DOUNAI_API_TOKEN="$(dounai-input token)" \
   -e DOUNAI_PUBLIC_BASE_URL="http://127.0.0.1:8000" \
   -v "$PWD/data:/app/data" \
-  dounai-input:0.1.0
+  dounai-input:0.1.1
 ```
 
 镜像以固定 UID/GID `10001:10001` 的非 root 用户运行。宿主机 `data/` 必须对该 UID 可写；在 Linux 上：
@@ -63,7 +63,7 @@ sudo chown -R 10001:10001 data
 不同平台可先查看：
 
 ```bash
-docker run --rm --entrypoint id dounai-input:0.1.0
+docker run --rm --entrypoint id dounai-input:0.1.1
 ```
 
 ### 3.2 本地模型
@@ -124,7 +124,7 @@ server {
 
 必须：
 
-- 设置 `DOUNAI_PUBLIC_BASE_URL=https://dounai.example.com`，否则事件里的媒体 URL 指向 localhost；
+- 设置 `DOUNAI_PUBLIC_BASE_URL=https://dounai.example.com`，否则事件里的媒体 URL 指向 localhost；启动日志、`/healthz` 的 `config_warnings` 与 `doctor` 会告警明显不一致；
 - 保留 `Host` 头，且与 `public_base_url` 的 host 一致，否则浏览器写请求会被 Origin 校验拒绝；
 - 配置足够的请求体上限（至少 26 MB，声纹录入可到 200 MB，见 API 文档）；
 - 配置较长的读超时（ASR 可能几十秒）；

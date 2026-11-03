@@ -82,10 +82,10 @@ flowchart LR
 3. **Media**：原子写入 `data/media/<uuid>.<ext>`，记录 SHA-256/mime/size；内容 URL 由 `public_base_url` 生成。
 4. **Context**：从 `events` 查询该 session 最近 N 条文字/转写。
 5. **ProviderManager**：active provider → fallback 链；每次尝试受超时、能力、隐私守卫、熔断控制。
-6. **ASR**：成功得到文本；失败/不可用则空文本并标记降级，不阻断事件。
+6. **ASR**：成功得到文本；成功但空文本记为 `empty`，失败/无可用 provider 记为 `unavailable`，均不阻断事件。
 7. **Voiceprint**：若开关、授权、模板齐全且是 WAV，本地提取、比较、结合唤醒词；任何异常降级为 `none`。
-8. **Event**：构造严格 Pydantic 模型，写入 SQLite；响应头携带降级/模型信息。
-9. **下游**：获得事件，按 `content` 拉取媒体，按需消费 `asr_text`/`voiceprint_event`/能力。
+8. **Event**：构造版本化 Pydantic 模型（`metadata.asr_status`），写入 SQLite；响应头携带会话/降级/ASR 状态/模型信息。
+9. **下游**：获得事件，按 `content` 拉取媒体（跨机用 base64 接口），按需消费 `asr_text`/`asr_status`/`voiceprint_event`/能力。
 
 文字与图片不调用 provider 转写。文字已是最终内容；图片以引用交给下游。这样本层不需要擅自改写用户表达，也不会引入图片描述字段破坏契约。
 
@@ -168,7 +168,7 @@ stateDiagram-v2
 ## 6. 数据模型
 
 ```text
-events(event_id PK, timestamp, modality, content, asr_text,
+events(event_id PK, timestamp, modality, content, asr_text, asr_status,
        voiceprint_event, model_capabilities, session_id, source,
        media_id, created_at)
 media(id PK, path, filename, mime, size, sha256, event_id, created_at)
@@ -185,6 +185,7 @@ privacy_audit(id, action, recorded_at, details_json)
 - **声纹模板只有一行**（单用户）：简化权限模型，明确“本机这个人”；
 - **审计不含音频/文本/模板**：只记录动作、政策版本、计数；
 - **保留期按 `created_at`**：媒体会跟随事件被清理，避免悬空引用；孤儿文件由启动/定时清理兜底。
+- **schema v2**：`events.asr_status` 为显式转写状态；启动时自动为 v1 数据库补列并回填（非空音频文本 → completed，空音频 → unavailable，其余 → not_applicable）。迁移可重入。
 
 ## 7. 安全与隐私边界
 
@@ -216,13 +217,13 @@ privacy_audit(id, action, recorded_at, details_json)
 
 | 决策 | 选择 | 理由 | 代价 |
 | --- | --- | --- | --- |
-| 事件字段 | 严格冻结，诊断放 header | 下游稳定；避免契约漂移 | 客户端需读 header 才能看降级 |
+| 事件字段 | 版本化（v1.1 增加可选 `asr_status`），其他诊断放 header | 下游稳定；ASR 缺失不再静默 | 客户端需读 header 才能看会话/降级 |
 | 模型角色 | 本层只做 ASR/能力声明 | 不篡改用户输入；契约无描述字段 | 多模态“理解”留给下游 |
 | 本地模型 | 可选 extra + CLI 下载 | 核心轻量、权重不入库 | 首次安装额外步骤 |
 | 声纹 | MFCC 统计基线 | 无重型依赖、可审计、完全本地 | 非生产级识别，噪声敏感 |
 | 云端降级 | 默认关闭 | 防止音频意外出设备 | 可用性让位于隐私 |
 | 存储 | SQLite + 文件 | 单文件、易删除/导出 | 不适合多副本 |
-| 媒体访问 | 高熵能力 URL | `<img>/<audio>` 友好 | URL 泄露即数据泄露 |
+| 媒体访问 | 高熵能力 URL + 鉴权 base64 接口 | 同机 `<img>/<audio>` 友好；跨机可取字节 | URL 泄露即数据泄露；base64 受 Token 保护 |
 | 插件 | entry point + 本地文件 | 第三方可独立安装/卸载 | 进程内代码信任 |
 
 ## 10. 可观测性
@@ -235,7 +236,7 @@ privacy_audit(id, action, recorded_at, details_json)
 
 ## 11. 未来演进（不承诺）
 
-- 契约 v2：增加 `schema_version` 和可选媒体元数据，需同步下游；
+- 契约 v1.2/v2：如需更多媒体元数据或显式 `schema_version`，需同步下游；当前 v1.1 已用 `x-contract-version` 暴露；
 - 异步转写任务队列与 webhook；
 - 可选 SQLite 加密/操作系统钥匙串保护；
 - 更可靠的声纹模型（独立可选包），但必须保持本地；

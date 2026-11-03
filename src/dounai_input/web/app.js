@@ -32,8 +32,13 @@ const state = {
 sessionStorage.setItem("dounai.session", state.sessionId);
 
 function newSessionId() {
-  const id = crypto.randomUUID ? crypto.randomUUID().replaceAll("-", "") : `${Date.now()}${Math.random()}`;
-  return `sess_${id.replaceAll(".", "")}`;
+  if (crypto.randomUUID) return crypto.randomUUID();
+  // Fallback for old browsers: build an RFC 4122 v4 UUID from random bytes.
+  const bytes = crypto.getRandomValues(new Uint8Array(16));
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
 class ApiError extends Error {
@@ -431,6 +436,7 @@ async function sendCurrent() {
       provider: response.headers.get("X-Dounai-Provider"),
       model: response.headers.get("X-Dounai-Model"),
       degraded: response.headers.get("X-Dounai-Degraded") === "true",
+      asrStatus: response.headers.get("X-Dounai-ASR-Status"),
       voiceprintChecked: response.headers.get("X-Dounai-Voiceprint-Checked") === "true",
     };
     // The JSON body is fetched separately only when needed; this response is a plain body.
@@ -466,13 +472,23 @@ function renderEventStatus() {
   const container = $("#eventStatus");
   container.innerHTML = "";
   addChip(container, MODALITY_LABELS[event.modality] || event.modality, "");
-  if (event.metadata?.asr_text) addChip(container, "已转写", "is-local");
+  const asrStatus = event.metadata?.asr_status || diagnostics?.asrStatus;
+  if (asrStatus === "completed") addChip(container, "已转写", "is-local");
+  if (asrStatus === "empty") addChip(container, "未检测到语音", "");
+  if (asrStatus === "unavailable") {
+    addChip(container, "转写不可用 · 请勿当作文本", "is-warn");
+  }
+  $("#asrHint").hidden = !(event.modality === "audio" && asrStatus === "unavailable");
   if (event.metadata?.voiceprint_event === "wakeup") addChip(container, "声纹唤醒", "is-voice");
   if (diagnostics?.provider) addChip(container, diagnostics.provider, "");
   if (diagnostics?.model && diagnostics.model !== diagnostics.provider) {
     addChip(container, diagnostics.model, "");
   }
-  if (diagnostics?.degraded) addChip(container, "已降级 · 事件仍可用", "is-warn");
+  if (diagnostics?.degraded && (asrStatus === "completed" || !event.metadata?.asr_status)) {
+    // Completed after a fallback is a soft degradation; unavailable already has
+    // its own explicit chip above.
+    addChip(container, "已降级 · 事件仍可用", "is-warn");
+  }
 }
 
 function addHistory(event, diagnostics) {
@@ -517,7 +533,11 @@ function renderHistory() {
 
 function summarizeEvent(event) {
   if (event.modality === "text") return event.content.slice(0, 80);
-  if (event.modality === "audio") return event.metadata?.asr_text || "语音片段";
+  if (event.modality === "audio") {
+    if (event.metadata?.asr_status === "completed") return event.metadata.asr_text;
+    if (event.metadata?.asr_status === "empty") return "语音（未检测到人声）";
+    return "语音（未转写）";
+  }
   return "图像引用";
 }
 
@@ -537,6 +557,7 @@ function resetSession() {
   $("#eventStatus").innerHTML = "";
   $("#copyEventButton").disabled = true;
   $("#history").hidden = true;
+  $("#asrHint").hidden = true;
   renderSession();
   toast("已开始新会话。", "success");
 }
@@ -659,6 +680,7 @@ async function deleteAllData() {
     $("#eventStatus").innerHTML = "";
     $("#history").hidden = true;
     $("#copyEventButton").disabled = true;
+    $("#asrHint").hidden = true;
     toast("全部个人数据已删除。", "success");
     await loadPrivacy();
   } catch (error) {

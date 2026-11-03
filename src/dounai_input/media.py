@@ -90,8 +90,15 @@ def normalize_source(raw: str | None) -> str:
 
 
 def normalize_session_id(raw: str | None) -> str:
+    """Normalize a session id.
+
+    Auto-generated ids are UUIDs so they can be passed to downstream services
+    (for example OmniNexus) without a format translation.  Client-supplied ids
+    remain permissive for backward compatibility; callers that need cross-layer
+    UUID semantics should send a UUID.
+    """
     if raw is None or not raw.strip():
-        return f"sess_{uuid4().hex}"
+        return str(uuid4())
     session = raw.strip()
     if not _SAFE_SESSION.fullmatch(session):
         raise InputValidationError(

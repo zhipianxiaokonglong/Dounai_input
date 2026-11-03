@@ -12,7 +12,7 @@ from fastapi import UploadFile
 
 from .config import Settings
 from .errors import InputValidationError
-from .events import InputEvent
+from .events import AsrStatus, InputEvent
 from .media import MediaService, normalize_session_id, normalize_source
 from .providers.base import ProviderAttempt, TranscriptionOutcome, TranscriptionRequest
 from .providers.manager import ProviderManager
@@ -39,6 +39,7 @@ class IngestionResult:
         headers = {
             "X-Dounai-Session": self.session_id,
             "X-Dounai-Degraded": "true" if self.degraded else "false",
+            "X-Dounai-ASR-Status": self.event.metadata.asr_status,
             "X-Dounai-Voiceprint-Checked": "true" if self.voiceprint_checked else "false",
         }
         if self.provider_id:
@@ -82,6 +83,7 @@ class IngestService:
             modality="text",
             content=content,
             capabilities=self.providers.capabilities(),
+            asr_status="not_applicable",
         )
         self.store.save_event(event, session_id=session, source=normalized_source)
         return IngestionResult(
@@ -112,6 +114,7 @@ class IngestService:
             modality="image",
             content=content_url,
             capabilities=self.providers.capabilities(),
+            asr_status="not_applicable",
         )
         try:
             self.store.save_event(
@@ -178,11 +181,23 @@ class IngestService:
             except Exception as exc:
                 logger.warning("voiceprint check failed: %s", type(exc).__name__)
 
+        asr_status: AsrStatus
+        if outcome.text.strip():
+            asr_status = "completed"
+        elif outcome.provider_id is not None:
+            # A provider ran successfully but detected no speech / returned empty.
+            asr_status = "empty"
+        else:
+            # No ASR-capable provider, all failed, or the selected model cannot
+            # transcribe.  This is an explicit capability gap, not usable text.
+            asr_status = "unavailable"
+
         event = InputEvent.create(
             modality="audio",
             content=content_url,
             capabilities=self.providers.capabilities(),
             asr_text=outcome.text,
+            asr_status=asr_status,
             voiceprint_event=voiceprint_event,  # type: ignore[arg-type]
         )
         try:
@@ -202,7 +217,7 @@ class IngestService:
             media_id=record.id,
             provider_id=outcome.provider_id or self.providers.active_id,
             model=outcome.model or self.providers.effective_model_label(),
-            degraded=outcome.degraded,
+            degraded=outcome.degraded or asr_status == "unavailable",
             voiceprint_checked=voiceprint_checked,
             attempts=outcome.attempts,
             elapsed_ms=int((time.monotonic() - started) * 1000),

@@ -174,6 +174,22 @@ def test_circuit_breaker_skips_recently_failed_provider(tmp_path: Path) -> None:
     assert second.degraded is True
 
 
+def test_successful_provider_with_empty_text_is_empty_not_unavailable(tmp_path: Path) -> None:
+    settings = make_settings(
+        tmp_path,
+        default_active_provider="active",
+        fallback_providers=(),
+    )
+    store = Store(settings.database_path, settings.media_dir)
+    registry = ProviderRegistry()
+    registry.register(StubProvider(provider_id="active", text=""))
+    manager = ProviderManager(settings, store, registry=registry)
+    outcome = asyncio.run(manager.transcribe(_request(tmp_path)))
+    assert outcome.text == ""
+    assert outcome.provider_id == "active"
+    assert outcome.degraded is False
+
+
 def test_active_offline_can_use_local_transcriber_without_degradation(
     tmp_path: Path,
 ) -> None:
@@ -262,6 +278,37 @@ def test_api_reports_degradation_in_headers_not_event(tmp_path: Path) -> None:
     assert response.status_code == 201
     payload = response.json()
     assert payload["metadata"]["asr_text"] == "fallback transcript"
-    assert set(payload["metadata"]) == {"asr_text", "voiceprint_event", "model_capabilities"}
+    assert payload["metadata"]["asr_status"] == "completed"
+    assert set(payload["metadata"]) == {
+        "asr_text",
+        "asr_status",
+        "voiceprint_event",
+        "model_capabilities",
+    }
     assert response.headers["X-Dounai-Degraded"] == "true"
+    assert response.headers["X-Dounai-ASR-Status"] == "completed"
     assert response.headers["X-Dounai-Provider"] == "secondary"
+
+
+def test_api_marks_empty_transcript_separately_from_unavailable(tmp_path: Path) -> None:
+    settings = make_settings(
+        tmp_path,
+        default_active_provider="silent",
+        fallback_providers=(),
+    )
+    app = build_app(settings)
+    manager = app.state.services["providers"]
+    registry = ProviderRegistry()
+    registry.register(StubProvider(provider_id="silent", text=""))
+    manager.registry = registry
+    manager.set_active("silent")
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/inputs/audio",
+            files={"file": ("voice.wav", synthetic_voice(), "audio/wav")},
+        )
+    assert response.status_code == 201
+    assert response.json()["metadata"]["asr_status"] == "empty"
+    assert response.json()["metadata"]["asr_text"] == ""
+    # Empty is a successful capability run, not a provider failure.
+    assert response.headers["X-Dounai-Degraded"] == "false"

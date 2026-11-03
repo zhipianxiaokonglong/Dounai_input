@@ -157,6 +157,54 @@ def test_export_can_be_created_when_empty(client) -> None:
     assert "voiceprint.json" not in archive.namelist()
 
 
+def test_legacy_v1_database_is_migrated(tmp_path, settings) -> None:
+    import sqlite3
+
+    legacy_path = tmp_path / "legacy.sqlite3"
+    with sqlite3.connect(legacy_path) as connection:
+        connection.executescript(
+            """
+            CREATE TABLE schema_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+            CREATE TABLE events (
+                event_id TEXT PRIMARY KEY,
+                timestamp TEXT NOT NULL,
+                modality TEXT NOT NULL,
+                content TEXT NOT NULL,
+                asr_text TEXT NOT NULL,
+                voiceprint_event TEXT NOT NULL,
+                model_capabilities TEXT NOT NULL,
+                session_id TEXT NOT NULL,
+                source TEXT NOT NULL,
+                media_id TEXT,
+                created_at TEXT NOT NULL
+            );
+            INSERT INTO schema_meta VALUES ('schema_version', '1');
+            INSERT INTO events VALUES (
+                '00000000-0000-0000-0000-000000000001',
+                '2026-01-01T00:00:00Z',
+                'audio',
+                'http://x/media',
+                '你好',
+                'none',
+                '[]',
+                'sess_old',
+                'api',
+                NULL,
+                '2026-01-01T00:00:00Z'
+            );
+            """
+        )
+    store = Store(legacy_path, settings.media_dir)
+    stored = store.get_event("00000000-0000-0000-0000-000000000001")
+    assert stored is not None
+    assert stored.event.metadata.asr_status == "completed"
+    with sqlite3.connect(legacy_path) as connection:
+        version = connection.execute(
+            "SELECT value FROM schema_meta WHERE key = 'schema_version'"
+        ).fetchone()[0]
+    assert version == "2"
+
+
 def test_store_permissions_are_private_on_posix(settings) -> None:
     import os
     import stat

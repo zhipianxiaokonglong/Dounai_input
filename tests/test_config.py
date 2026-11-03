@@ -103,6 +103,35 @@ def test_example_config_parses(tmp_path: Path) -> None:
     assert settings.provider_config("local-whisper")["model"] == "small"
 
 
+def test_public_base_url_warnings(tmp_path: Path) -> None:
+    from dataclasses import replace
+
+    settings = load_settings(_empty(tmp_path))
+    assert settings.public_base_url_warnings() == []
+    mismatch = replace(
+        settings,
+        host="0.0.0.0",
+        public_base_url="http://127.0.0.1:8000",
+    )
+    assert "remote consumers" in mismatch.public_base_url_warnings()[0]
+    port_mismatch = replace(
+        settings,
+        host="127.0.0.1",
+        port=8010,
+        public_base_url="http://127.0.0.1:8000",
+    )
+    assert "does not match" in port_mismatch.public_base_url_warnings()[0]
+    invalid = replace(settings, public_base_url="not-a-url")
+    assert "absolute http(s)" in invalid.public_base_url_warnings()[0]
+
+
+def test_invalid_public_base_url_is_rejected_on_load(tmp_path: Path) -> None:
+    config = tmp_path / "bad-url.toml"
+    config.write_text('[server]\npublic_base_url = "ftp://example.com"\n', encoding="utf-8")
+    with pytest.raises(ConfigurationError):
+        load_settings(config)
+
+
 def test_utf8_bom_config_is_accepted(tmp_path: Path) -> None:
     config = tmp_path / "bom.toml"
     config.write_bytes(b"\xef\xbb\xbf[server]\nport = 8124\n")

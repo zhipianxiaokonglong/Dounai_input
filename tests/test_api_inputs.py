@@ -12,8 +12,19 @@ from tests.helpers import PNG_1X1, make_png, synthetic_voice
 
 def _assert_event_shape(payload: dict) -> None:
     assert set(payload) == {"event_id", "timestamp", "modality", "content", "metadata"}
-    assert set(payload["metadata"]) == {"asr_text", "voiceprint_event", "model_capabilities"}
+    assert set(payload["metadata"]) == {
+        "asr_text",
+        "asr_status",
+        "voiceprint_event",
+        "model_capabilities",
+    }
     assert payload["metadata"]["voiceprint_event"] in {"wakeup", "none"}
+    assert payload["metadata"]["asr_status"] in {
+        "completed",
+        "empty",
+        "unavailable",
+        "not_applicable",
+    }
     assert UUID(payload["event_id"])
     datetime.fromisoformat(payload["timestamp"].replace("Z", "+00:00"))
 
@@ -70,6 +81,58 @@ def test_image_upload_and_media_access(client) -> None:
     assert media.headers["cache-control"] == "private, no-store"
     assert media.content == PNG_1X1
 
+    # Readback must preserve the session/source diagnostics even though the event
+    # body itself stays at the frozen contract shape.
+    readback = client.get(f"/v1/events/{payload['event_id']}")
+    assert readback.headers["X-Dounai-Session"] == "sess_image"
+    assert readback.headers["X-Dounai-Source"] == "camera"
+    assert readback.headers["X-Dounai-ASR-Status"] == "not_applicable"
+    assert readback.headers["X-Dounai-Media-Id"] == payload["content"].rsplit("/", 1)[-1]
+    assert set(readback.json()) == {"event_id", "timestamp", "modality", "content", "metadata"}
+
+
+def test_media_base64_and_event_media_endpoints(client) -> None:
+    image = client.post(
+        "/v1/inputs/image",
+        files={"file": ("pixel.png", PNG_1X1, "image/png")},
+        data={"session_id": "sess_media_delivery", "source": "camera"},
+    ).json()
+    media_id = image["content"].rsplit("/", 1)[-1]
+
+    base64_response = client.get(f"/v1/media/{media_id}/base64")
+    assert base64_response.status_code == 200
+    payload = base64_response.json()
+    assert payload["media_id"] == media_id
+    assert payload["mime"] == "image/png"
+    assert payload["sha256"]
+    decoded = __import__("base64").b64decode(payload["base64"])
+    assert decoded == PNG_1X1
+
+    event_media = client.get(f"/v1/events/{image['event_id']}/media")
+    assert event_media.status_code == 200
+    metadata = event_media.json()
+    assert metadata["event_id"] == image["event_id"]
+    assert metadata["session_id"] == "sess_media_delivery"
+    assert metadata["mime"] == "image/png"
+    assert "base64" not in metadata
+    assert metadata["url"] == image["content"]
+
+    inline = client.get(f"/v1/events/{image['event_id']}/media?include_base64=true")
+    assert inline.status_code == 200
+    assert __import__("base64").b64decode(inline.json()["base64"]) == PNG_1X1
+
+    text_event = client.post("/v1/inputs/text", json={"text": "no media"}).json()
+    assert client.get(f"/v1/events/{text_event['event_id']}/media").status_code == 404
+
+
+def test_generated_session_id_is_uuid(client) -> None:
+    response = client.post("/v1/inputs/text", json={"text": "自动会话"})
+    assert response.status_code == 201
+    session = response.headers["X-Dounai-Session"]
+    assert UUID(session)
+    readback = client.get(f"/v1/events/{response.json()['event_id']}")
+    assert readback.headers["X-Dounai-Session"] == session
+
 
 def test_image_rejects_content_that_is_not_an_image(client) -> None:
     response = client.post(
@@ -108,7 +171,11 @@ def test_audio_without_model_still_creates_event(client) -> None:
     _assert_event_shape(payload)
     assert payload["modality"] == "audio"
     assert payload["metadata"]["asr_text"] == ""
+    assert payload["metadata"]["asr_status"] == "unavailable"
     assert payload["metadata"]["voiceprint_event"] == "none"
+    # No ASR-capable provider means the event is usable but explicitly degraded.
+    assert response.headers["X-Dounai-Degraded"] == "true"
+    assert response.headers["X-Dounai-ASR-Status"] == "unavailable"
     media = client.get(payload["content"])
     assert media.status_code == 200
     assert media.headers["content-type"] == "audio/wav"

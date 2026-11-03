@@ -22,7 +22,7 @@ from uuid import UUID
 from .events import InputEvent
 from .settings_helpers import to_utc_iso
 
-_SCHEMA_VERSION = 1
+_SCHEMA_VERSION = 2
 
 
 @dataclass(frozen=True)
@@ -112,6 +112,7 @@ class Store:
                     modality TEXT NOT NULL,
                     content TEXT NOT NULL,
                     asr_text TEXT NOT NULL,
+                    asr_status TEXT NOT NULL DEFAULT 'not_applicable',
                     voiceprint_event TEXT NOT NULL,
                     model_capabilities TEXT NOT NULL,
                     session_id TEXT NOT NULL,
@@ -165,14 +166,33 @@ class Store:
                 );
                 """
             )
-            existing = connection.execute(
-                "SELECT value FROM schema_meta WHERE key = 'schema_version'"
-            ).fetchone()
-            if existing is None:
+            event_columns = {
+                row["name"] for row in connection.execute("PRAGMA table_info(events)").fetchall()
+            }
+            if "asr_status" not in event_columns:
+                # v1 databases predate the explicit ASR failure marker.  Backfill
+                # what can be inferred without guessing: non-empty audio text is
+                # completed, empty audio is unavailable, text/image are N/A.
                 connection.execute(
-                    "INSERT INTO schema_meta(key, value) VALUES('schema_version', ?)",
-                    (str(_SCHEMA_VERSION),),
+                    "ALTER TABLE events ADD COLUMN asr_status TEXT NOT NULL "
+                    "DEFAULT 'not_applicable'"
                 )
+                connection.execute(
+                    """
+                    UPDATE events SET asr_status = CASE
+                        WHEN modality = 'audio' AND asr_text <> '' THEN 'completed'
+                        WHEN modality = 'audio' THEN 'unavailable'
+                        ELSE 'not_applicable'
+                    END
+                    """
+                )
+            connection.execute(
+                """
+                INSERT INTO schema_meta(key, value) VALUES('schema_version', ?)
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value
+                """,
+                (str(_SCHEMA_VERSION),),
+            )
         with contextlib.suppress(OSError):
             self.database_path.chmod(0o600)
 
@@ -217,9 +237,9 @@ class Store:
                 """
                 INSERT INTO events(
                     event_id, timestamp, modality, content, asr_text,
-                    voiceprint_event, model_capabilities, session_id,
+                    asr_status, voiceprint_event, model_capabilities, session_id,
                     source, media_id, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     str(event.event_id),
@@ -227,6 +247,7 @@ class Store:
                     event.modality,
                     event.content,
                     event.metadata.asr_text,
+                    event.metadata.asr_status,
                     event.metadata.voiceprint_event,
                     json.dumps(event.metadata.model_capabilities),
                     session_id,
@@ -307,6 +328,23 @@ class Store:
                     record.created_at,
                 ),
             )
+
+    def get_media_for_event(self, event_id: str) -> MediaRecord | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM media WHERE event_id = ? LIMIT 1", (event_id,)
+            ).fetchone()
+        if row is None:
+            return None
+        return MediaRecord(
+            id=row["id"],
+            path=row["path"],
+            filename=row["filename"],
+            mime=row["mime"],
+            size=int(row["size"]),
+            sha256=row["sha256"],
+            created_at=row["created_at"],
+        )
 
     def get_media(self, media_id: str) -> MediaRecord | None:
         with self._connect() as connection:
@@ -555,6 +593,7 @@ class Store:
                 "content": row["content"],
                 "metadata": {
                     "asr_text": row["asr_text"],
+                    "asr_status": row["asr_status"],
                     "voiceprint_event": row["voiceprint_event"],
                     "model_capabilities": json.loads(row["model_capabilities"]),
                 },

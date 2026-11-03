@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.1.1] - 2026-11-03
+
+### Changed (contract v1.1)
+
+- 事件 `metadata` 新增可选 `asr_status`：`completed | empty | unavailable | not_applicable`
+- 语音在无可用 ASR/失败时显式标记 `unavailable` 并返回 `X-Dounai-Degraded: true`，不再静默空文本
+- 默认自动生成会话 ID 改为 UUID；会话 ID 在输入响应和事件读回响应头稳定回传
+- 新增鉴权媒体交付：`GET /v1/media/{id}/base64`、`GET /v1/events/{id}/media?include_base64=true`
+- `public_base_url` 与监听地址明显不一致时启动告警、`/healthz` 暴露 `config_warnings`、doctor 报告
+- SQLite schema 升级为 v2，自动迁移旧库并回填 `asr_status`
+
 ## [0.1.0] - 2026-10-24
 
 ### Added

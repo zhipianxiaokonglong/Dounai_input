@@ -10,7 +10,7 @@ Authorization: Bearer <token>
 
 也支持 `X-Dounai-Token: <token>`，供不便设置 `Authorization` 的本地客户端使用。
 
-## 1. 事件契约（冻结）
+## 1. 事件契约（v1.1，向后兼容）
 
 所有输入最终返回如下结构，**没有额外字段**。机器可读 JSON Schema 位于仓库 `schemas/input-event.schema.json`，也可请求 `GET /v1/contract`。
 
@@ -22,6 +22,7 @@ Authorization: Bearer <token>
   "content": "今天有一点累，想找人说说话。",
   "metadata": {
     "asr_text": "",
+    "asr_status": "not_applicable",
     "voiceprint_event": "none",
     "model_capabilities": ["text", "image", "audio"]
   }
@@ -35,10 +36,22 @@ Authorization: Bearer <token>
 | `modality` | `text \| image \| audio` | 输入模态 |
 | `content` | string | 文字原文，或图像/音频的受控引用 URL |
 | `metadata.asr_text` | string | 语音转写文本；不适用时为空字符串 |
+| `metadata.asr_status` | `completed \| empty \| unavailable \| not_applicable` | v1.1 新增；语音转写是否真正可用 |
 | `metadata.voiceprint_event` | `wakeup \| none` | 本地声纹 + 唤醒词判断 |
 | `metadata.model_capabilities` | string[] | 当前所选模型声明的能力，按 `text,image,audio` 规范排序 |
 
 `model_capabilities` 表达**模型能力声明**，不是本层接受输入的许可；三种输入在离线模式下也都能生成事件。
+
+### `asr_status` 语义
+
+| 值 | 含义 | 下游应做什么 |
+| --- | --- | --- |
+| `completed` | provider 成功返回非空文本 | 可使用 `asr_text` |
+| `empty` | provider 成功但识别为空（静音/无语音） | 不要当作用户说了话 |
+| `unavailable` | 无可用 ASR、provider 失败/超时、选中模型不支持转写 | 不要使用 `asr_text`；提示或降级 |
+| `not_applicable` | 文字/图像输入 | 无需处理 |
+
+该字段在 JSON Schema 中**不是 required**：v1.0 事件仍可被解析，v1.1 生产者始终填充。新消费方必须检查它。契约版本通过 `x-contract-version: "1.1"` 与 `/healthz` 的 `contract_version` 暴露。
 
 ### 媒体引用
 
@@ -52,6 +65,21 @@ http://127.0.0.1:8000/v1/media/506608736c6d43368a0089b6e381e31e
 - 设置 API Token 后，媒体 URL **仍可无 Token 读取**，以便下游 `<img>`/`<audio>` 和媒体管线直接消费。这是有意设计：事件本身只能通过鉴权接口获得。
 - 响应带 `Cache-Control: private, no-store` 与 `X-Content-Type-Options: nosniff`。
 - 支持 Starlette `FileResponse` 的常规读取语义；媒体 ID 不存在返回 404。
+
+### 跨机 / 云端交付
+
+`content` 是引用，不是字节。若消费方无法访问 `public_base_url`（跨机、容器网络、云端），使用以下**需要鉴权**的接口：
+
+```http
+GET /v1/media/{media_id}/base64
+GET /v1/events/{event_id}/media
+GET /v1/events/{event_id}/media?include_base64=true
+```
+
+- `/v1/media/{id}/base64` 返回 `{media_id,mime,size,sha256,filename,base64}`。
+- `/v1/events/{id}/media` 返回事件媒体元数据、`session_id`、可访问 `url`；加 `include_base64=true` 返回字节。
+- 文字事件没有媒体，返回 404。
+- `public_base_url` 与实际监听地址不一致时，启动日志与 `/healthz` 的 `config_warnings` 会告警；`doctor` 也会报告。反向代理场景是合法的（监听回环、对外域名），不会被误报。
 
 ## 2. 输入接口
 
@@ -74,7 +102,7 @@ Content-Type: application/json
 | 字段 | 必需 | 说明 |
 | --- | --- | --- |
 | `text` | 是 | 1–20000 字符，不能为空白或包含 NUL/控制字符（换行、Tab 除外） |
-| `session_id` | 否 | 1–128 位字母/数字/`._:-`；不传则生成 |
+| `session_id` | 否 | 1–128 位字母/数字/`._:-`；不传则生成 **UUID**。跨层使用建议传 UUID |
 | `source` | 否 | 1–64 位字母/数字/`._:-`；不传为 `api` |
 
 ```bash
@@ -129,13 +157,14 @@ curl -X POST http://127.0.0.1:8000/v1/inputs/audio \
 4. 若开关、授权、模板均满足且文件是 WAV，本地计算声纹；
 5. 保存并返回事件。
 
-转写失败时仍是 `201`，`asr_text=""`，`X-Dounai-Degraded: true`。
+转写不可用时仍是 `201`：`metadata.asr_status="unavailable"`、`asr_text=""`，响应头 `X-Dounai-Degraded: true` 与 `X-Dounai-ASR-Status: unavailable`。默认 `offline` provider 也属于此类——语音被正常接收，但没有转写能力，必须显式标记而不是静默返回空字符串。
 
 ### 2.4 语音转写降级与响应头
 
 | Header | 值 | 含义 |
 | --- | --- | --- |
-| `X-Dounai-Session` | session id | 服务端确认的会话 |
+| `X-Dounai-Session` | session id | 服务端确认的会话；`GET /v1/events/{id}` 也会回传 |
+| `X-Dounai-ASR-Status` | `completed \| empty \| unavailable \| not_applicable` | 与事件体 `metadata.asr_status` 一致，便于不看 body 的调用方 |
 | `X-Dounai-Provider` | provider id | 实际产出转写的 provider；无转写时为当前 provider |
 | `X-Dounai-Model` | string | 模型标签（如有） |
 | `X-Dounai-Degraded` | `true/false` | 是否发生了失败/不可用导致的降级 |
@@ -316,9 +345,11 @@ curl -X POST http://127.0.0.1:8000/v1/privacy/voiceprint/enroll \
 ```json
 {
   "status": "ok",
-  "version": "0.1.0",
+  "version": "0.1.1",
+  "contract_version": "1.1",
   "active_provider": "offline",
-  "time_utc": "2026-10-24T09:38:32Z"
+  "config_warnings": [],
+  "time_utc": "2026-11-03T09:38:32Z"
 }
 ```
 
@@ -407,4 +438,21 @@ curl -X POST https://gateway.example.com/v1/inputs/audio \
 
 ## 10. 版本与兼容
 
-当前事件契约版本隐含在字段结构中，尚未引入 `schema_version` 字段；新增字段属于破坏性变更。任何扩展必须先升级契约、同步下游并更新 `schemas/input-event.schema.json`，不得在运行时偷偷添加字段。
+当前事件契约版本为 **v1.1**：
+
+- `metadata.asr_status` 为 v1.1 新增、Schema 中可选；生产者始终填充。
+- 其余字段与 v1.0 保持一致，未新增 `session_id` 到事件体。
+- 版本通过 `GET /v1/contract` 的 `x-contract-version`、`GET /healthz` 的
+  `contract_version` 暴露。
+- v1.1 不新增必需字段，旧 v1.0 消费方仍可解析；新消费方必须检查
+  `asr_status`。后续任何新增**必需**字段都视为破坏性变更，必须先升级契约并
+  同步下游。
+
+会话与来源不进入事件体，通过以下响应头稳定回传：
+
+| Header | 出现在 |
+| --- | --- |
+| `X-Dounai-Session` | 所有输入响应、事件读回 |
+| `X-Dounai-Source` | 事件读回 |
+| `X-Dounai-Media-Id` | 事件读回（有媒体时） |
+| `X-Dounai-ASR-Status` | 所有输入响应、事件读回 |

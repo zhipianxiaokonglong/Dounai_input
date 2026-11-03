@@ -304,6 +304,11 @@ button:disabled { cursor: not-allowed; opacity: 0.5; }
 .status-chip.is-warn { background: #f7e7ce; color: #8a5b19; }
 .status-chip.is-local { background: var(--sage-wash); color: var(--sage); }
 .status-chip.is-voice { background: var(--coral-wash); color: var(--coral-dark); }
+.asr-hint {
+  margin: 0 0 12px; padding: 9px 11px; border-radius: 8px;
+  background: #f7e7ce; color: #7a5316; font-size: 11px; line-height: 1.55;
+}
+.asr-hint code { font-family: var(--font-mono); font-size: 10px; }
 .event-empty {
   display: flex; flex-direction: column; align-items: center; justify-content: center;
   min-height: 320px; gap: 22px; color: var(--muted); text-align: center; font-family: var(--font-display); font-size: 17px;

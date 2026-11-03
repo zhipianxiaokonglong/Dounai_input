@@ -49,11 +49,27 @@ Web 控制台有三个标签：文字、图像、语音。
 
 - **文字**：直接输入，原样进入事件的 `content`。
 - **图像**：拖入或选择 JPEG / PNG / WebP / GIF，最大 15 MB。事件 `content` 是一个受控媒体 URL。
-- **语音**：录音或上传 WAV / MP3 / M4A / FLAC / OGG / WebM，最大 25 MB。若配置了语音模型，转写文本写入 `metadata.asr_text`。
+- **语音**：录音或上传 WAV / MP3 / M4A / FLAC / OGG / WebM，最大 25 MB。若配置了语音模型，转写文本写入 `metadata.asr_text`，转写可用性写入 `metadata.asr_status`。
 
 控制台录音最长 60 秒；浏览器会在上传前尽量转成 16 kHz PCM WAV，以便进行本地声纹判断。直接上传非 WAV 语音仍可正常生成事件，但声纹判断会跳过。
 
-发送后右侧显示**精确的事件 JSON**。下游只应消费这个结构。
+发送后右侧显示**精确的事件 JSON**。下游只应消费这个结构。会话 ID 在响应头 `X-Dounai-Session` 中稳定回传（默认生成的会话 ID 是 UUID，可直接用于下游服务）；事件体不包含会话字段，以保持 v1.0 兼容。
+
+### 外部消费媒体
+
+图像/音频的 `content` 是 URL。若消费方不在同一台机器，无法访问该 URL，可使用需要 API Token 的：
+
+```bash
+# 只取字节（base64）
+curl -H "Authorization: Bearer $DOUNAI_API_TOKEN" \
+  http://127.0.0.1:8000/v1/media/<media_id>/base64
+
+# 或按事件取媒体元数据 + 可选字节
+curl -H "Authorization: Bearer $DOUNAI_API_TOKEN" \
+  "http://127.0.0.1:8000/v1/events/<event_id>/media?include_base64=true"
+```
+
+部署时请把 `DOUNAI_PUBLIC_BASE_URL` 设为消费方实际可访问的地址；启动日志、`/healthz` 的 `config_warnings` 与 `dounai-input doctor` 会在明显不一致时告警。
 
 ## 3. 安装本地免费模型
 
@@ -208,7 +224,7 @@ asr_model = "qwen3-asr-flash"
 dounai-input providers list
 ```
 
-`dashscope` 应显示「可用」。然后在 Web 控制台上传一段中文语音，事件中的 `asr_text` 应出现转写文本；响应头 `X-Dounai-Provider` 为 `dashscope`。
+`dashscope` 应显示「可用」。然后在 Web 控制台上传一段中文语音，事件中的 `asr_text` 应出现转写文本且 `asr_status="completed"`；响应头 `X-Dounai-Provider` 为 `dashscope`。
 
 若失败：
 
@@ -216,7 +232,7 @@ dounai-input providers list
 dounai-input doctor
 ```
 
-常见原因是密钥未进入当前进程、地域不匹配、Workspace 域名错误或网络无法访问厂商。请求失败时输入层仍会生成语音事件，只是 `asr_text` 为空，并在响应头标记降级。
+常见原因是密钥未进入当前进程、地域不匹配、Workspace 域名错误或网络无法访问厂商。请求失败时输入层仍会生成语音事件，`asr_text` 为空、`asr_status="unavailable"`，并在响应头标记降级。
 
 ### 4.5 密钥安全
 
@@ -237,9 +253,9 @@ dounai-input providers activate openai
 - 会话上下文保存在本地事件表中。转写请求会携带最近几条文本/转写作为上下文（厂商支持时）。
 - 主模型不可用、超时、限流、返回格式异常时，会按 `fallback` 顺序尝试。
 - **隐私守卫**：默认 `allow_remote_fallback = false`。当主模型是本地模型时，不会自动把音频发到云端；当主模型是云端时，也不会自动再发给另一家云端。只有显式启用才允许云端降级。
-- 全部失败时仍会返回事件，`asr_text` 为空，响应头 `X-Dounai-Degraded: true`。下游不会因为模型故障而收不到输入。
+- 全部失败或没有可转写的模型时仍会返回事件：`asr_text` 为空、`metadata.asr_status="unavailable"`、响应头 `X-Dounai-Degraded: true` 与 `X-Dounai-ASR-Status: unavailable`。下游不会因为模型故障而收不到输入，也不会误把空文本当可用转写。
 
-控制台的「降级」标记来自响应头，不写进事件，保证事件严格符合契约。
+控制台的「降级」标记来自响应头；事件体只增加契约 v1.1 的 `asr_status`，不写其他诊断字段。
 
 ## 6. 声纹与唤醒
 

@@ -135,6 +135,7 @@ class PrivacyService:
         with zipfile.ZipFile(archive, mode="w", compression=zipfile.ZIP_DEFLATED) as bundle:
             manifest = {
                 "schema": "dounai-input-export/1",
+                "contract_version": "1.1",
                 "exported_at": exported_at,
                 "notice": (
                     "This archive contains personal data including a biometric voiceprint "

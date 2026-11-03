@@ -2,6 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/zhipianxiaokonglong/Dounai_input/schemas/input-event.schema.json",
   "title": "DounaiInputEvent",
+  "x-contract-version": "1.1",
   "type": "object",
   "additionalProperties": false,
   "required": ["event_id", "timestamp", "modality", "content", "metadata"],
@@ -16,6 +17,11 @@
       "required": ["asr_text", "voiceprint_event", "model_capabilities"],
       "properties": {
         "asr_text": { "type": "string" },
+        "asr_status": {
+          "enum": ["completed", "empty", "unavailable", "not_applicable"],
+          "default": "not_applicable",
+          "description": "completed: non-empty transcript; empty: ASR ran but heard nothing; unavailable: no ASR provider or failure; not_applicable: text/image input."
+        },
         "voiceprint_event": { "enum": ["wakeup", "none"] },
         "model_capabilities": {
           "type": "array",

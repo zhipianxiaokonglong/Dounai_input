@@ -18,7 +18,7 @@
 | 文字内容 | SQLite `events.content` | 交给下游 | 72 小时 | 否（本层不回传云端；除非下游另行处理） |
 | 图像文件 | `data/media/` | 交给下游 | 72 小时 | 否（本层不调用图像理解） |
 | 音频文件 | `data/media/` | 交给下游；可选转写 | 72 小时 | 仅当用户选择云端 ASR 时发给该厂商 |
-| 语音转写 | SQLite `events.asr_text` | 下游 + 会话上下文 | 72 小时 | 否（若由云端生成，文本已回到本地） |
+| 语音转写 | SQLite `events.asr_text` + `asr_status` | 下游 + 会话上下文 | 72 小时 | 否（若由云端生成，文本已回到本地） |
 | 会话 ID / 来源 | SQLite `events` | 上下文分组、设备排障 | 72 小时 | 否 |
 | 声纹模板 | SQLite BLOB，80 维 float32 | 唤醒判断 | 直到删除/撤回 | **否，永不** |
 | 授权记录 | SQLite `consents` | 证明授权时间/版本 | 直到删除 | 否 |
@@ -120,7 +120,7 @@ stateDiagram-v2
 - 所有业务接口 Bearer 鉴权；比较使用常量时间。
 - 浏览器 `POST/PUT/PATCH/DELETE` 校验 `Origin` 与 `Sec-Fetch-Site`，阻止 CSRF。
 - 不启用 CORS；控制台与 API 同源。
-- 媒体能力 URL 使用 128 位随机 ID；持有 URL 即可读取，需按秘密管理。
+- 媒体能力 URL 使用 128 位随机 ID；持有 URL 即可读取，需按秘密管理。跨机消费应使用需 Token 的 `/v1/media/{id}/base64` 或 `/v1/events/{id}/media`，避免依赖公开 URL。
 - 第三方调用使用 HTTPS（配置允许 http 以支持本地自建服务，但生产应使用 HTTPS 或内网隔离）。
 - 无遥测，不主动连接除用户配置的 provider 之外的地址。
 

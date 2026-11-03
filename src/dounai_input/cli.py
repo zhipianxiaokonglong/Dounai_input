@@ -174,7 +174,10 @@ def _serve(settings: Settings, args: argparse.Namespace) -> int:
     print("豆奶输入层已就绪")
     print(f"  控制台  http://{settings.host}:{settings.port}/")
     print(f"  数据目录 {settings.data_dir}")
+    print(f"  媒体地址 {settings.public_base_url}")
     print(f"  当前模型 {app.state.services['providers'].active_id}")
+    for warning in settings.public_base_url_warnings():
+        print(f"  警告 {warning}")
     if settings.api_token:
         print("  API 鉴权 已启用")
     else:
@@ -347,8 +350,11 @@ def _doctor(settings: Settings) -> int:
     print(f"配置：{settings.config_path or '默认值（未找到 dounai.toml）'}")
     print(f"数据目录：{settings.data_dir}")
     print(f"服务地址：http://{settings.host}:{settings.port}")
+    print(f"媒体地址：{settings.public_base_url}")
     print(f"API 鉴权：{'已启用' if settings.api_token else '未启用'}")
     problems: list[str] = []
+    for warning in settings.public_base_url_warnings():
+        problems.append(f"public_base_url: {warning}")
     try:
         settings.ensure_directories()
         probe = settings.data_dir / ".doctor-write-test"

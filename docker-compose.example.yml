@@ -10,7 +10,7 @@ services:
       context: .
       args:
         INSTALL_LOCAL_ASR: "0"
-    image: dounai-input:0.1.0
+    image: dounai-input:0.1.1
     user: "10001:10001"
     environment:
       DOUNAI_API_TOKEN: "${DOUNAI_API_TOKEN:?set DOUNAI_API_TOKEN}"

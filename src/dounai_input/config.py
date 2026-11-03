@@ -16,6 +16,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 DEFAULT_WAKE_PHRASE = "你好豆奶"
 CONSENT_POLICY_VERSION = "1.0"
@@ -121,6 +122,33 @@ class Settings:
             "Set a bearer token, or set DOUNAI_ALLOW_INSECURE_BIND=1 only for an "
             "isolated development network."
         )
+
+    def public_base_url_warnings(self) -> list[str]:
+        """Warn when media references cannot match how clients reach the server.
+
+        A reverse proxy may legitimately expose a public hostname while the
+        gateway listens on loopback, so that combination is allowed.  The
+        unsafe/confusing combinations are a loopback public URL while listening
+        publicly, or a loopback URL whose port does not match the listener.
+        """
+        parsed = urlsplit(self.public_base_url)
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+            return ["public_base_url must be an absolute http(s) URL."]
+        public_host = parsed.hostname.strip("[]").lower()
+        public_port = parsed.port or (443 if parsed.scheme == "https" else 80)
+        warnings: list[str] = []
+        if _is_loopback(public_host) and not _is_loopback(self.host):
+            warnings.append(
+                "public_base_url points at loopback while the gateway listens on a "
+                "non-loopback address; remote consumers cannot fetch media URLs. "
+                "Set DOUNAI_PUBLIC_BASE_URL to the address clients actually use."
+            )
+        if _is_loopback(public_host) and _is_loopback(self.host) and public_port != self.port:
+            warnings.append(
+                f"public_base_url port {public_port} does not match the listening port "
+                f"{self.port}; generated media URLs will point at the wrong port."
+            )
+        return warnings
 
 
 def _best_effort_private(path: Path) -> None:
@@ -243,6 +271,9 @@ def load_settings(config_path: Path | str | None = None) -> Settings:
         or server.get("public_base_url")
         or f"http://127.0.0.1:{port}"
     ).rstrip("/")
+    parsed_public = urlsplit(public_base_url)
+    if parsed_public.scheme not in {"http", "https"} or not parsed_public.hostname:
+        raise ConfigurationError("public_base_url must be an absolute http(s) URL.")
 
     api_token = _env("DOUNAI_API_TOKEN")
     allow_insecure_bind = _env_bool("DOUNAI_ALLOW_INSECURE_BIND")

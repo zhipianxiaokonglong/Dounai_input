@@ -6,7 +6,7 @@
 
 在写代码前，请先接受以下不变量：
 
-1. **事件契约冻结**：输出只能有 `event_id`、`timestamp`、`modality`、`content`、`metadata.{asr_text,voiceprint_event,model_capabilities}`。任何诊断信息通过 HTTP 响应头、日志或独立管理端点表达。
+1. **事件契约版本化**：输出只能有 `event_id`、`timestamp`、`modality`、`content`、`metadata.{asr_text,asr_status,voiceprint_event,model_capabilities}`。`asr_status` 是 v1.1 新增的可选 Schema 字段，生产者必须填充；不允许在运行时添加其他字段。会话、来源、降级等诊断信息通过 HTTP 响应头、日志或独立管理端点表达。
 2. **声纹不出设备**：声纹特征、模板、相似度不得传给 provider，不得写日志，不得写遥测。
 3. **能力必须真实声明**：provider 的 `capabilities` 表示模型能处理的输入模态；`can_transcribe` 表示它能否产出语音转写。不要为了出现在下拉框而虚报。
 4. **失败不能丢输入**：provider 故障应降级为可用事件，而不是 5xx。
@@ -22,7 +22,7 @@ src/dounai_input/
 ├── app.py               ASGI 入口
 ├── cli.py               命令与本地运维
 ├── config.py            TOML + 环境变量、默认值、校验
-├── events.py            冻结事件模型 + JSON Schema
+├── events.py            版本化事件模型 + JSON Schema
 ├── ingest.py            三模态校验、编排、响应头
 ├── media.py             魔数校验、原子写入、能力 URL
 ├── store.py             SQLite 持久化、导出、保留期
@@ -293,7 +293,13 @@ PROVIDER = Echo
 
 ### 7.1 事件
 
-`events.py` 的 Pydantic 模型设置了 `extra="forbid"`，`metadata` 只有三个字段。不要在 provider 或 ingest 中往 dict 里塞诊断字段。若下游需要模型 ID，先讨论契约升级，不要本地扩展。
+`events.py` 的 Pydantic 模型设置了 `extra="forbid"`，`metadata` 只有四个字段（v1.1 增加了 `asr_status`）。不要在 provider 或 ingest 中往 dict 里塞诊断字段。若下游需要模型 ID 或 session，先讨论契约升级，不要本地扩展；session/source 通过响应头回传。
+
+`asr_status` 由 `ingest.py` 根据 provider 结果计算：
+- 非空文本 → `completed`；
+- provider 成功但空文本 → `empty`；
+- 无可用 provider / 失败 / 选中模型不能转写 → `unavailable`；
+- 文字/图像 → `not_applicable`。
 
 `model_capabilities` 使用 canonical 排序，且去重。新增能力（如 video）属于契约变更，当前明确不支持。
 
@@ -307,6 +313,7 @@ PROVIDER = Echo
 
 ### 7.3 数据删除/导出
 
+- 数据库 schema 当前为 v2（`events.asr_status`）。新增列必须提供可重入迁移并保留旧行可读；不要只改 `CREATE TABLE`，因为已有部署不会重建表。
 - 任何新表都必须纳入 `Store.export_snapshot()` 和 `delete_all_personal_data()`。
 - 任何新落盘文件都必须纳入保留期/删除/孤儿清理。
 - 新增敏感字段时更新 `docs/privacy.md` 的数据清单和导出说明。

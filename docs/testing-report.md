@@ -1,8 +1,8 @@
 # 测试、故障注入与根因分析报告
 
-> 版本：0.1.0
+> 版本：0.1.1（contract v1.1）
 >
-> 测试日期：2026-10-24
+> 测试日期：2026-10-24；审计跟进：2026-11-03
 >
 > 范围：豆奶输入层全部代码、接口、隐私流程、provider 降级、插件/模型安装与 Web 控制台
 >
@@ -10,8 +10,8 @@
 
 ## 1. 结论摘要
 
-- **自动化测试：113 passed，0 failed**。
-- **总覆盖率：79%**（语句/分支综合；`store` 95%、`api` 91%、`events`/`errors` 100%、`manager` 约 90%）。
+- **自动化测试：123 passed，0 failed**。
+- **总覆盖率：80%**（语句/分支综合；`store` 94%、`api` 91%、`events`/`errors` 100%、`manager` 约 90%）。
 - **Lint/格式**：`ruff check` 与 `ruff format --check` 全部通过。
 - **依赖安全**：`pip-audit` 报告 **No known vulnerabilities found**。
 - **静态安全扫描**：Bandit 未发现未处置问题；仅在 `pyproject.toml` 中跳过 B105（把环境变量**名称**误判为硬编码密码）。
@@ -28,13 +28,14 @@
   "modality": "audio",
   "metadata": {
     "asr_text": "你好,豆奶,今天天氣不錯,我想和你聊聊天。",
+    "asr_status": "completed",
     "voiceprint_event": "wakeup",
     "model_capabilities": ["audio"]
   }
 }
 ```
 
-响应头：`X-Dounai-Degraded: false`、`X-Dounai-Provider: local-whisper`、`X-Dounai-Model: faster-whisper/small`、`X-Dounai-Voiceprint-Checked: true`。
+响应头：`X-Dounai-Degraded: false`、`X-Dounai-ASR-Status: completed`、`X-Dounai-Provider: local-whisper`、`X-Dounai-Model: faster-whisper/small`、`X-Dounai-Voiceprint-Checked: true`。
 
 ## 2. 环境与方法
 
@@ -63,14 +64,14 @@
 
 | 类别 | 用例数 | 关键覆盖 | 结果 |
 | --- | ---: | --- | --- |
-| 事件契约 `test_contract.py` | 6 | 精确字段、额外字段拒绝、UTC、能力去重、schema 一致 | 通过 |
-| 输入 API `test_api_inputs.py` | 14 | 三模态、媒体 URL、415/413/422、事件查询、安全头 | 通过 |
-| 鉴权/安全 `test_auth.py` | 8 | Bearer、Token 不回显、能力 URL、CSRF、超大 Content-Length | 通过 |
-| 配置 `test_config.py` | 10 | 默认安全值、非回环拒绝、TOML/env/BOM、非法阈值 | 通过 |
+| 事件契约 `test_contract.py` | 8 | 精确字段、asr_status、v1.0 兼容解析、UTC、能力去重、schema 一致 | 通过 |
+| 输入 API `test_api_inputs.py` | 16 | 三模态、媒体 URL、事件读回 session、base64 交付、自动 UUID、415/413/422 | 通过 |
+| 鉴权/安全 `test_auth.py` | 9 | Bearer、Token 不回显、能力 URL、base64 需鉴权、CSRF、超大 Content-Length | 通过 |
+| 配置 `test_config.py` | 12 | 默认安全值、非回环拒绝、TOML/env/BOM、public_base_url 告警 | 通过 |
 | Provider `test_providers.py` | 15 | 能力、可用性、两种 OpenAI 协议、错误脱敏、畸形 JSON、本地模型 | 通过 |
-| 降级 `test_fallback.py` | 10 | 异常/超时/全失败/能力/隐私守卫/熔断/上下文/响应头 | 通过 |
+| 降级 `test_fallback.py` | 12 | 异常/超时/全失败/能力/隐私守卫/熔断/上下文/空转写/响应头 | 通过 |
 | 声纹 `test_voiceprint.py` | 13 | 正负样本、静音、授权、开关、样本不落盘、API 唤醒 | 通过 |
-| 隐私 `test_privacy.py` | 11 | 政策、导出 ZIP、撤回、删除、保留期、权限 | 通过 |
+| 隐私 `test_privacy.py` | 12 | 政策、导出 ZIP、撤回、删除、保留期、旧库迁移、权限 | 通过 |
 | 插件/模型 `test_plugins.py` | 12 | entry point、目录插件、禁用、冲突、安装失败、校验/卸载 | 通过 |
 | UI `test_ui.py` | 5 | CSP、静态资源、DOM ID、Node 语法、政策打包 | 通过 |
 | CLI `test_cli.py` | 9 | 列表、状态、授权、导出/删除、doctor、错误处理 | 通过 |
@@ -99,6 +100,11 @@
 | F18 | 模型下载 TLS 失败 | 面向用户的错误，不留半成品 | 包装为 ModelInstallError，staging 清理 | `test_install_wraps_tls_failure_with_actionable_message` |
 | F19 | provider 可用性检查抛异常 | 服务仍可用 | 标记不可用，status 不 500 | `test_manager_status_survives_availability_exception` |
 | F20 | 未安装的 active provider 重启 | 退回 offline，不崩溃 | 初始化逻辑选择 offline | 代码审查 + CLI/doctor 实测 |
+| F21 | 无可用 ASR（默认 offline） | 显式标记不可用 | `asr_status=unavailable`、degraded=true、201 | `test_audio_without_model_still_creates_event` |
+| F22 | ASR 成功但静音/空文本 | 标记 empty，不算故障 | `asr_status=empty`、degraded=false | `test_successful_provider_with_empty_text_is_empty_not_unavailable`、`test_api_marks_empty_transcript_separately_from_unavailable` |
+| F23 | 旧 v1 数据库缺少 `asr_status` | 启动迁移且旧行可读 | 自动补列/回填，schema_version=2 | `test_legacy_v1_database_is_migrated` |
+| F24 | 跨机消费方取不到媒体 URL | 鉴权 base64 可取字节 | 元数据/字节接口正确；无 Token 401 | `test_media_base64_and_event_media_endpoints`、`test_media_base64_requires_token` |
+| F25 | `public_base_url` 与监听地址错配 | 明确告警 | 启动日志/healthz/doctor 告警 | `test_public_base_url_warnings` |
 
 ## 5. 端到端验证
 
@@ -107,9 +113,11 @@
 启动独立进程，`/healthz` 200；通过 `httpx` 发送中文文字、PNG 图像、WAV 音频：
 
 - 三条事件均为 201；
-- 事件字段严格为 5 个顶层字段；
-- 媒体 URL 可读，返回正确 `Content-Type`；
-- 未配置模型时音频 `asr_text` 为空、`degraded=false`（offline 本来就不转写，不伪装成失败）。
+- 事件字段严格为 5 个顶层字段，`metadata` 为 v1.1 的 4 个字段；
+- 媒体 URL 可读，返回正确 `Content-Type`；跨机可用鉴权 base64 接口取到字节；
+- 事件读回返回 `X-Dounai-Session` / `X-Dounai-Source` / `X-Dounai-ASR-Status`；
+- 未配置模型时音频 `asr_text` 为空且 `asr_status="unavailable"`，响应头
+  `X-Dounai-Degraded: true`——显式能力缺口，不再伪装成“成功但空文本”。
 
 ### 5.2 本地模型
 
@@ -360,6 +368,42 @@ Edge headless（1440×1200）实际执行：
 
 **验证**：`test_non_loopback_bind_requires_token` 新增 `127.0.0.1.nip.io`、IPv6、localhost 分支。
 
+### RC-15 审计 I-03：默认 offline 下语音静默无转写（设计缺陷）
+
+**现象**：默认 `offline` provider 下，语音请求返回 201、`asr_text=""`，但响应头 `X-Dounai-Degraded` 为 **false**；事件体也没有任何字段说明“没有转写能力”。下游只看事件 JSON 时无法区分“用户没有说话”和“没有 ASR 模型”。
+
+**根因**：把“offline provider 本来就不转写”当成正常能力，而不是**能力缺口**；降级标记只覆盖 provider 失败，未覆盖“无可用 provider / 选中模型不支持音频”。这是**语义设计缺陷**，不是简单的响应头遗漏。
+
+**影响**：组装层可能把音频 URL 当文本（D-02）；用户/运维无法从事件判断语音实际未被理解。
+
+**修复**：
+1. 事件 `metadata.asr_status`（v1.1 可选字段）区分 `completed` / `empty` / `unavailable` / `not_applicable`；
+2. 无可用 ASR 或失败时 `X-Dounai-Degraded: true` 且 `X-Dounai-ASR-Status: unavailable`；
+3. 成功但空文本标记 `empty`，不算故障；
+4. 旧 v1 数据库自动迁移并回填状态。
+
+**副作用**：旧 v1.0 消费方若不读新字段，仍可能误用空文本；因此文档明确要求新消费方必须检查 `asr_status`。事件体增加一个可选字段，属于契约 v1.1 升级，非破坏性（未新增 required）。
+
+**验证**：`test_audio_without_model_still_creates_event`、`test_successful_provider_with_empty_text_is_empty_not_unavailable`、`test_api_marks_empty_transcript_separately_from_unavailable`、`test_legacy_v1_database_is_migrated`、契约测试。
+
+### RC-16 审计 I-01/I-02：会话标识与媒体交付截断（设计缺陷）
+
+**现象**：会话 ID 只在输入响应头出现，`GET /v1/events/{id}` 丢失；媒体 `content` 只是回环 URL，跨机消费者无法取字节。
+
+**根因**：把“事件体冻结”误当成“所有上下文都不能回传”；同时把媒体引用当成媒体交付，未设计跨机读取路径。属于**接口设计缺口**，不是单点 bug。
+
+**影响**：D-01/D-02 跨层问题难以修复；容器/云端消费方无法取媒体。
+
+**修复**：
+- 事件读回响应头补 `X-Dounai-Session/Source/Media-Id/ASR-Status`；
+- 新增需鉴权的 `GET /v1/media/{id}/base64` 与 `GET /v1/events/{id}/media[?include_base64=true]`；
+- 默认自动会话 ID 改为 UUID（便于下游 UUID 契约），客户端自定义仍兼容；
+- `public_base_url` 错配时启动日志、`/healthz`、`doctor` 告警，不自动改写代理场景。
+
+**副作用**：base64 接口会把媒体字节放进内存/JSON，需控制访问与大小；事件体仍未加 `session_id`，下游必须读响应头或媒体接口。跨机 URL 仍要求部署方配置 `public_base_url`。
+
+**验证**：`test_image_upload_and_media_access`（读回头）、`test_media_base64_and_event_media_endpoints`、`test_media_base64_requires_token`、`test_generated_session_id_is_uuid`、`test_public_base_url_warnings`。
+
 ## 7. 设计缺陷 vs 实现缺陷
 
 | 编号 | 类型 | 是否影响安全/隐私 | 影响面 | 修复副作用 |
@@ -379,6 +423,10 @@ Edge headless（1440×1200）实际执行：
 | RC-13 | 实现 | 低（诊断） | 声纹质量字段 | 无 |
 | RC-14 | 设计（安全校验） | 高 | 非回环绑定保护 | 自定义回环域名需 Token |
 
+> 审计跟进（2026-11-03）：I-01/I-02/I-03 已修复，见新增的 RC-15/RC-16 及第 6.x 节。
+| RC-15 | 设计（ASR 语义） | 中 | 所有语音事件/下游 | 旧消费方需读新字段 |
+| RC-16 | 设计（跨层接口） | 中 | 会话/媒体交付 | 下游需读响应头/走 base64 |
+
 ## 8. 为什么不是表面修复
 
 - 声纹问题没有通过“降低阈值”掩盖，而是分析了特征归一化对说话人信息的影响，重新设计特征并做正负样本验证。
@@ -386,7 +434,9 @@ Edge headless（1440×1200）实际执行：
 - CSRF 不是加一个前端提示，而是在服务端中间件拒绝跨站写；并补充了反向代理约束。
 - 降级隐私问题不是文档提醒，而是改变状态机并加测试；默认关闭远程降级。
 - 保留期不是清一下目录，而是修正“事件-媒体”一致性查询并加回归测试。
-- 事件契约没有增加诊断字段，而是坚持把诊断放 header，避免破坏下游。
+- 事件契约只增加一个**可选**且语义明确的 `asr_status`，没把 session/来源等诊断塞进事件；旧消费方仍能解析。
+- 跨机媒体不是把 base64 硬塞进事件，而是新增独立鉴权接口，保持事件体积与引用语义。
+- 旧数据库不是要求用户重装，而是启动时幂等迁移并回填可推断状态。
 
 ## 9. 残余风险与未测项
 
@@ -436,6 +486,14 @@ curl -F "file=@voice.wav;type=audio/wav" http://127.0.0.1:8766/v1/inputs/audio
 ```
 
 浏览器 E2E 的 Playwright 脚本仅在测试机临时目录运行，没有作为依赖或测试数据提交；控制台截图保存在 `docs/assets/console-demo.png`。
+
+本次审计跟进的浏览器实测（Edge headless）：
+
+- 文字事件 `asr_status="not_applicable"`，会话标识为 UUID；
+- 未配置 ASR 时上传 WAV：事件 `asr_status="unavailable"`、界面显示"转写不可用"提示；
+- 无 JS 控制台错误、无横向溢出；
+- 媒体 base64 接口、事件媒体接口、契约 v1.1 断言均通过；
+- 全新 venv 安装 wheel 后 smoke 通过。
 
 ## 11. 仓库清洁声明
 

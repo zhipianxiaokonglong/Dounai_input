@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import contextlib
 import hmac
 import logging
@@ -26,6 +27,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response, StreamingRes
 from pydantic import BaseModel, ConfigDict, Field
 from starlette.background import BackgroundTask
 
+from . import __version__
 from .config import Settings
 from .errors import (
     AuthenticationError,
@@ -33,18 +35,17 @@ from .errors import (
     InputValidationError,
     NotFoundError,
 )
-from .events import EVENT_JSON_SCHEMA
+from .events import CONTRACT_VERSION, EVENT_JSON_SCHEMA
 from .ingest import IngestionResult, IngestService
 from .media import MediaService
 from .model_catalog import catalog_entries
 from .privacy import PrivacyService
 from .providers.manager import ProviderManager
 from .services import create_services
-from .store import Store
+from .store import Store, StoredEvent
 
 logger = logging.getLogger(__name__)
 
-_SESSION_HEADER = "X-Dounai-Session"
 _LANGUAGE_RE = re.compile(r"^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})?$")
 
 
@@ -103,7 +104,7 @@ def build_router(settings: Settings) -> APIRouter:
 
     @router.get("/contract", tags=["contract"])
     async def event_contract() -> dict[str, object]:
-        """Return the frozen JSON Schema consumed by downstream modules."""
+        """Return the versioned JSON Schema consumed by downstream modules."""
         return EVENT_JSON_SCHEMA
 
     @router.get("/providers", tags=["models"])
@@ -173,12 +174,71 @@ def build_router(settings: Settings) -> APIRouter:
         return _event_response(result)
 
     @router.get("/events/{event_id}", tags=["inputs"])
-    async def get_event(event_id: str, request: Request) -> dict[str, object]:
+    async def get_event(event_id: str, request: Request) -> JSONResponse:
         store: Store = _services(request)["store"]
         stored = store.get_event(event_id)
         if stored is None:
             raise NotFoundError("Event not found.")
-        return stored.event.contract_dict()
+        return JSONResponse(
+            content=stored.event.contract_dict(),
+            headers=_event_read_headers(stored),
+        )
+
+    @router.get("/events/{event_id}/media", tags=["inputs"])
+    async def get_event_media(
+        event_id: str,
+        request: Request,
+        include_base64: Annotated[bool, Query()] = False,
+    ) -> dict[str, Any]:
+        """Return the media metadata (and optional bytes) for an event.
+
+        This is the cross-machine delivery contract: consumers that cannot reach
+        ``public_base_url`` can obtain the exact bytes via this authenticated
+        endpoint instead of fetching the referenced URL.
+        """
+        store: Store = _services(request)["store"]
+        media_service: MediaService = _services(request)["media"]
+        stored = store.get_event(event_id)
+        if stored is None:
+            raise NotFoundError("Event not found.")
+        if stored.media_id is None:
+            raise NotFoundError("Event has no stored media.")
+        record = store.get_media_for_event(str(stored.event.event_id))
+        if record is None:
+            record = store.get_media(stored.media_id)
+        if record is None:
+            raise NotFoundError("Media not found.")
+        payload: dict[str, Any] = {
+            "event_id": str(stored.event.event_id),
+            "media_id": record.id,
+            "mime": record.mime,
+            "size": record.size,
+            "sha256": record.sha256,
+            "filename": record.filename,
+            "created_at": record.created_at,
+            "url": media_service.content_url(record.id),
+            "session_id": stored.session_id,
+        }
+        if include_base64:
+            _resolved, path = media_service.resolve(record.id)
+            data = await asyncio.to_thread(path.read_bytes)
+            payload["base64"] = base64.b64encode(data).decode("ascii")
+        return payload
+
+    @router.get("/media/{media_id}/base64", tags=["inputs"])
+    async def get_media_base64(media_id: str, request: Request) -> dict[str, Any]:
+        """Authenticated base64 delivery for consumers that cannot fetch URLs."""
+        media_service: MediaService = _services(request)["media"]
+        record, path = media_service.resolve(media_id)
+        data = await asyncio.to_thread(path.read_bytes)
+        return {
+            "media_id": record.id,
+            "mime": record.mime,
+            "size": record.size,
+            "sha256": record.sha256,
+            "filename": record.filename,
+            "base64": base64.b64encode(data).decode("ascii"),
+        }
 
     @router.get("/privacy/policy", tags=["privacy"])
     async def privacy_policy(request: Request) -> dict[str, Any]:
@@ -272,8 +332,22 @@ def _event_response(result: IngestionResult) -> JSONResponse:
     )
 
 
+def _event_read_headers(stored: StoredEvent) -> dict[str, str]:
+    headers = {
+        "X-Dounai-Session": stored.session_id,
+        "X-Dounai-Source": stored.source,
+        "X-Dounai-ASR-Status": stored.event.metadata.asr_status,
+    }
+    if stored.media_id:
+        headers["X-Dounai-Media-Id"] = stored.media_id
+    return headers
+
+
 def build_app(settings: Settings) -> FastAPI:
     settings.validate_bind()
+    config_warnings = settings.public_base_url_warnings()
+    for warning in config_warnings:
+        logger.warning("configuration: %s", warning)
     services = create_services(settings)
 
     from contextlib import asynccontextmanager
@@ -291,16 +365,17 @@ def build_app(settings: Settings) -> FastAPI:
 
     app = FastAPI(
         title="Dounai Input Gateway",
-        version="0.1.0",
+        version=__version__,
         description=(
             "隐私优先的多模态输入接入层：文字、图像、语音 → 标准化输入事件。"
-            "接口契约见 /v1/contract。"
+            f"事件契约 v{CONTRACT_VERSION}，接口契约见 /v1/contract。"
         ),
         docs_url="/docs",
         redoc_url=None,
         lifespan=lifespan,
     )
 
+    app.state.config_warnings = config_warnings
     app.state.services = {
         "settings": services.settings,
         "store": services.store,
@@ -480,8 +555,10 @@ def _install_surface_routes(app: FastAPI, settings: Settings) -> None:
     async def health() -> dict[str, object]:
         return {
             "status": "ok",
-            "version": "0.1.0",
+            "version": __version__,
+            "contract_version": CONTRACT_VERSION,
             "active_provider": app.state.services["providers"].active_id,
+            "config_warnings": app.state.config_warnings,
             "time_utc": _utc_now(),
         }
 
