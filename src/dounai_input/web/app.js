@@ -19,6 +19,12 @@ const state = {
   privacy: null,
   policy: null,
   models: [],
+  apiConnections: [],
+  apiPresets: [],
+  apiDiscovered: [],
+  apiSelectedModels: [],
+  apiProbes: {},
+  apiDeleteId: null,
   history: [],
   event: null,
   diagnostics: null,
@@ -133,7 +139,7 @@ function renderProviders() {
     badge.textContent = remote ? "云端" : "本地";
     badge.className = `privacy-badge${remote ? " is-remote" : ""}`;
     $("#providerNote").textContent = remote
-      ? "语音会发送到该厂商；密钥只从环境变量读取，不写入浏览器。"
+      ? "语音会发送到该厂商；密钥只保存在本机加密存储，不写入浏览器。"
       : "处理留在本机；本地模型权重需单独安装。";
     const caps = $("#providerCapabilities");
     caps.innerHTML = "";
@@ -840,6 +846,406 @@ function timestampName() {
   return new Date().toISOString().replace(/[:.]/g, "-");
 }
 
+
+const API_CAP_LABELS = { text: "文本", image: "图像", audio: "语音" };
+const API_STATUS_LABELS = {
+  supported: "通过",
+  unsupported: "不支持",
+  error: "错误",
+  not_tested: "未测试",
+};
+
+function currentApiForm() {
+  return {
+    base_url: $("#apiBaseUrlInput").value.trim(),
+    api_key: $("#apiKeyInput").value.trim(),
+    allow_private: $("#apiAllowPrivate").checked,
+    allow_http: $("#apiAllowHttp").checked,
+  };
+}
+
+function resetApiDialog() {
+  state.apiDiscovered = [];
+  state.apiSelectedModels = [];
+  state.apiProbes = {};
+  $("#apiNameInput").value = "";
+  $("#apiKeyInput").value = "";
+  $("#apiBaseUrlInput").value = "";
+  $("#apiAllowPrivate").checked = false;
+  $("#apiAllowHttp").checked = false;
+  $("#apiModelPicker").hidden = true;
+  $("#apiSelected").hidden = true;
+  $("#apiModelList").innerHTML = "";
+  $("#apiSelectedList").innerHTML = "";
+  $("#apiTestResult").hidden = true;
+  $("#apiTestResultBody").innerHTML = "";
+  $("#discoverHint").textContent = "";
+  $("#probeHint").textContent = "";
+  $("#apiManualModelToggle").checked = false;
+  $("#apiManualModelRow").hidden = true;
+  $("#apiManualModelInput").value = "";
+  $("#saveApiConnectionButton").disabled = true;
+  $("#probeSelectedButton").disabled = true;
+  renderApiPresets();
+  applyPreset(0);
+}
+
+function renderApiPresets() {
+  const select = $("#apiPresetSelect");
+  select.innerHTML = "";
+  const manual = document.createElement("option");
+  manual.value = "-1";
+  manual.textContent = "手动输入";
+  select.appendChild(manual);
+  state.apiPresets.forEach((preset, index) => {
+    const option = document.createElement("option");
+    option.value = String(index);
+    option.textContent = preset.recommended ? `${preset.name}（推荐）` : preset.name;
+    select.appendChild(option);
+  });
+  select.value = state.apiPresets.length ? "0" : "-1";
+}
+
+function applyPreset(index) {
+  const preset = state.apiPresets[index];
+  if (!preset) {
+    $("#apiPresetNote").textContent = "手动输入任意 OpenAI 兼容端点。";
+    $("#apiAllowPrivate").checked = false;
+    $("#apiAllowHttp").checked = false;
+    return;
+  }
+  $("#apiBaseUrlInput").value = preset.base_url;
+  $("#apiNameInput").value = preset.name;
+  $("#apiAllowPrivate").checked = Boolean(preset.requires_private_permission);
+  $("#apiAllowHttp").checked = Boolean(preset.requires_http_permission);
+  const models = preset.recommended_models.length
+    ? ` 推荐模型：${preset.recommended_models.join("、")}`
+    : "";
+  $("#apiPresetNote").textContent = `${preset.note}${models}`;
+}
+
+async function loadApiConnections() {
+  try {
+    const [connections, presets] = await Promise.all([
+      api("/v1/api-connections"),
+      api("/v1/api-presets"),
+    ]);
+    state.apiConnections = connections.connections || [];
+    state.apiPresets = presets.presets || [];
+    renderApiConnections();
+  } catch (error) {
+    toast(error.message, "error");
+  }
+}
+
+function renderApiConnections() {
+  const container = $("#apiConnectionList");
+  container.innerHTML = "";
+  if (!state.apiConnections.length) {
+    const empty = document.createElement("p");
+    empty.className = "muted";
+    empty.textContent = "尚未添加 API 连接。推荐先使用阿里云百炼 Qwen。";
+    container.appendChild(empty);
+    return;
+  }
+  state.apiConnections.forEach((connection) => {
+    const card = document.createElement("div");
+    card.className = "api-connection";
+    const head = document.createElement("div");
+    head.className = "api-connection-head";
+    const copy = document.createElement("div");
+    const title = document.createElement("strong");
+    title.textContent = connection.name;
+    const meta = document.createElement("small");
+    meta.textContent = `${connection.base_url} · key ${connection.key_fingerprint}`;
+    copy.append(title, meta);
+    const actions = document.createElement("div");
+    actions.className = "api-connection-actions";
+    const refresh = document.createElement("button");
+    refresh.type = "button";
+    refresh.className = "provider-action";
+    refresh.textContent = "重新发现";
+    refresh.addEventListener("click", () => refreshConnection(connection.id));
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "provider-action";
+    remove.textContent = "删除";
+    remove.addEventListener("click", () => confirmDeleteApiConnection(connection.id));
+    actions.append(refresh, remove);
+    head.append(copy, actions);
+    const tags = document.createElement("div");
+    tags.className = "api-model-tags";
+    if (!connection.models.length) {
+      const none = document.createElement("span");
+      none.className = "hint";
+      none.textContent = "没有已保存的模型；请删除后重建。";
+      tags.appendChild(none);
+    }
+    connection.models.forEach((model) => {
+      const tag = document.createElement("span");
+      tag.className = `api-model-tag${model.active ? " is-active" : ""}`;
+      tag.textContent = model.model_id;
+      const caps = document.createElement("span");
+      caps.className = "hint";
+      caps.textContent = (model.capabilities || []).map((cap) => API_CAP_LABELS[cap] || cap).join("·");
+      tag.appendChild(caps);
+      if (model.active) {
+        const active = document.createElement("em");
+        active.textContent = "使用中";
+        active.className = "hint";
+        tag.appendChild(active);
+      } else {
+        const use = document.createElement("button");
+        use.type = "button";
+        use.textContent = "切换";
+        use.addEventListener("click", () => switchProvider(model.provider_id));
+        tag.appendChild(use);
+      }
+      const del = document.createElement("button");
+      del.type = "button";
+      del.textContent = "移除模型";
+      del.addEventListener("click", () => removeApiModel(connection.id, model.provider_id));
+      tag.appendChild(del);
+      tags.appendChild(tag);
+    });
+    card.append(head, tags);
+    container.appendChild(card);
+  });
+}
+
+async function refreshConnection(connectionId) {
+  try {
+    const data = await api(`/v1/api-connections/${connectionId}/refresh`, { method: "POST" });
+    const count = (data.models || []).length;
+    toast(`已重新发现 ${count} 个模型；已有模型不会自动更新能力，请重新测试。`, "success");
+  } catch (error) {
+    toast(error.message, "error");
+  }
+}
+
+function confirmDeleteApiConnection(connectionId) {
+  state.apiDeleteId = connectionId;
+  openDialog($("#apiDeleteDialog"));
+}
+
+async function deleteApiConnection() {
+  if (!state.apiDeleteId) return;
+  try {
+    await api(`/v1/api-connections/${state.apiDeleteId}`, { method: "DELETE" });
+    closeDialog($("#apiDeleteDialog"));
+    state.apiDeleteId = null;
+    toast("API 连接已删除，密钥同时清除。", "success");
+    await loadProviders();
+    await loadApiConnections();
+  } catch (error) {
+    toast(error.message, "error");
+  }
+}
+
+async function removeApiModel(connectionId, providerId) {
+  if (!window.confirm("移除这个模型？如果它是当前模型会自动切回离线直通。")) return;
+  try {
+    await api(`/v1/api-connections/${connectionId}/models/${providerId}`, { method: "DELETE" });
+    toast("模型已移除。", "success");
+    await loadProviders();
+    await loadApiConnections();
+  } catch (error) {
+    toast(error.message, "error");
+  }
+}
+
+async function discoverModels() {
+  const form = currentApiForm();
+  if (!form.base_url) return toast("请填写 Base URL。", "error");
+  if (!form.api_key) return toast("请填写 API Key。", "error");
+  $("#discoverHint").textContent = "正在调用厂商 /models…";
+  try {
+    const data = await api("/v1/api-connections/discover", { method: "POST", body: form });
+    state.apiDiscovered = data.models || [];
+    renderDiscoveredModels();
+    $("#apiModelPicker").hidden = false;
+    $("#discoverHint").textContent = `发现 ${state.apiDiscovered.length} 个模型；勾选后测试能力。`;
+  } catch (error) {
+    $("#discoverHint").textContent = "";
+    toast(error.message, "error");
+  }
+}
+
+function renderDiscoveredModels() {
+  const container = $("#apiModelList");
+  const query = $("#apiModelSearch").value.trim().toLowerCase();
+  container.innerHTML = "";
+  const models = state.apiDiscovered.filter((model) =>
+    !query || model.id.toLowerCase().includes(query)
+  );
+  if (!models.length) {
+    const empty = document.createElement("p");
+    empty.className = "hint";
+    empty.textContent = "没有匹配的模型；可手动输入 ID。";
+    container.appendChild(empty);
+    return;
+  }
+  models.slice(0, 200).forEach((model) => {
+    const row = document.createElement("label");
+    row.className = "api-model-row";
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.value = model.id;
+    checkbox.checked = state.apiSelectedModels.includes(model.id);
+    checkbox.addEventListener("change", () => toggleSelectedModel(model.id, checkbox.checked));
+    const name = document.createElement("span");
+    name.textContent = model.owned_by ? `${model.id} · ${model.owned_by}` : model.id;
+    row.append(checkbox, name);
+    container.appendChild(row);
+  });
+}
+
+function toggleSelectedModel(modelId, selected) {
+  if (selected && !state.apiSelectedModels.includes(modelId)) {
+    if (state.apiSelectedModels.length >= 20) {
+      toast("一次最多选择 20 个模型。", "error");
+      return;
+    }
+    state.apiSelectedModels.push(modelId);
+  } else if (!selected) {
+    state.apiSelectedModels = state.apiSelectedModels.filter((item) => item !== modelId);
+  }
+  renderSelectedModels();
+}
+
+function addManualModel() {
+  const value = $("#apiManualModelInput").value.trim();
+  if (!value) return toast("请输入模型 ID。", "error");
+  toggleSelectedModel(value, true);
+  $("#apiManualModelInput").value = "";
+}
+
+function renderSelectedModels() {
+  const container = $("#apiSelectedList");
+  container.innerHTML = "";
+  $("#apiSelected").hidden = state.apiSelectedModels.length === 0;
+  $("#apiSelectedCount").textContent = state.apiSelectedModels.length
+    ? `${state.apiSelectedModels.length} 个`
+    : "";
+  state.apiSelectedModels.forEach((modelId) => {
+    const item = document.createElement("div");
+    item.className = "api-selected-item";
+    const name = document.createElement("span");
+    name.textContent = modelId;
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "text-button";
+    remove.textContent = "移除";
+    remove.addEventListener("click", () => toggleSelectedModel(modelId, false));
+    item.append(name, remove);
+    container.appendChild(item);
+  });
+  const hasResults = state.apiSelectedModels.some((modelId) => state.apiProbes[modelId]);
+  $("#saveApiConnectionButton").disabled = !hasResults || Object.values(state.apiProbes).length === 0;
+  $("#probeSelectedButton").disabled = !state.apiSelectedModels.length;
+}
+
+async function probeSelectedModels() {
+  const form = currentApiForm();
+  if (!state.apiSelectedModels.length) return;
+  const button = $("#probeSelectedButton");
+  button.disabled = true;
+  $("#probeHint").textContent = "正在逐个测试（会调用厂商，最多每个模型 3 次）…";
+  const results = [];
+  try {
+    for (const modelId of state.apiSelectedModels) {
+      try {
+        const result = await api("/v1/api-connections/probe", {
+          method: "POST",
+          body: { ...form, model_id: modelId },
+        });
+        state.apiProbes[modelId] = result;
+        results.push(result);
+      } catch (error) {
+        state.apiProbes[modelId] = {
+          model_id: modelId,
+          capabilities: [],
+          transcription_protocol: null,
+          probes: { text: { status: "error", detail: error.message, latency_ms: 0 } },
+        };
+        results.push(state.apiProbes[modelId]);
+      }
+    }
+    renderProbeResults(results);
+    $("#saveApiConnectionButton").disabled = false;
+    $("#probeHint").textContent = "已完成。只有至少一项能力通过的模型才能保存。";
+  } finally {
+    button.disabled = false;
+  }
+}
+
+function renderProbeResults(results) {
+  const details = $("#apiTestResult");
+  const body = $("#apiTestResultBody");
+  body.innerHTML = "";
+  details.hidden = false;
+  details.open = true;
+  results.forEach((result) => {
+    const card = document.createElement("div");
+    card.className = "probe-card";
+    const title = document.createElement("strong");
+    title.textContent = result.model_id;
+    card.appendChild(title);
+    const grid = document.createElement("div");
+    grid.className = "probe-grid";
+    ["text", "image", "audio"].forEach((capability) => {
+      const outcome = result.probes?.[capability] || { status: "not_tested", detail: "" };
+      const box = document.createElement("div");
+      box.className = `probe-box is-${outcome.status}`;
+      const label = document.createElement("strong");
+      label.textContent = `${API_CAP_LABELS[capability]} · ${API_STATUS_LABELS[outcome.status] || outcome.status}`;
+      const detail = document.createElement("span");
+      detail.textContent = outcome.detail || "";
+      box.append(label, detail);
+      grid.appendChild(box);
+    });
+    card.appendChild(grid);
+    if (result.transcription_protocol) {
+      const protocol = document.createElement("p");
+      protocol.className = "hint";
+      protocol.textContent = `语音协议：${result.transcription_protocol}`;
+      card.appendChild(protocol);
+    }
+    body.appendChild(card);
+  });
+  renderSelectedModels();
+}
+
+async function saveApiConnection() {
+  const form = currentApiForm();
+  const name = $("#apiNameInput").value.trim();
+  if (!name) return toast("请填写连接名称。", "error");
+  const models = state.apiSelectedModels
+    .map((modelId) => state.apiProbes[modelId])
+    .filter((result) => result && (result.capabilities || []).length)
+    .map((result) => ({
+      model_id: result.model_id,
+      capabilities: result.capabilities,
+      transcription_protocol: result.transcription_protocol,
+      probes: result.probes,
+    }));
+  if (!models.length) {
+    return toast("请先测试模型；没有通过任何能力的模型不能保存。", "error");
+  }
+  try {
+    await api("/v1/api-connections", {
+      method: "POST",
+      body: { ...form, name, models },
+    });
+    closeDialog($("#apiDialog"));
+    toast(`已保存 ${models.length} 个模型。可在上方切换使用。`, "success");
+    await loadProviders();
+    await loadApiConnections();
+  } catch (error) {
+    toast(error.message, "error");
+  }
+}
+
 function bindEvents() {
   $$(".tab").forEach((button) => {
     button.addEventListener("click", () => setTab(button.dataset.tab));
@@ -978,6 +1384,22 @@ function bindEvents() {
     await refreshAll();
   });
 
+  $("#openApiDialogButton").addEventListener("click", () => {
+    resetApiDialog();
+    openDialog($("#apiDialog"));
+  });
+  $("#closeApiDialogButton").addEventListener("click", () => closeDialog($("#apiDialog")));
+  $("#apiPresetSelect").addEventListener("change", (event) => applyPreset(Number(event.target.value)));
+  $("#discoverModelsButton").addEventListener("click", discoverModels);
+  $("#apiModelSearch").addEventListener("input", renderDiscoveredModels);
+  $("#apiManualModelToggle").addEventListener("change", (event) => {
+    $("#apiManualModelRow").hidden = !event.target.checked;
+  });
+  $("#apiManualModelButton").addEventListener("click", addManualModel);
+  $("#probeSelectedButton").addEventListener("click", probeSelectedModels);
+  $("#saveApiConnectionButton").addEventListener("click", saveApiConnection);
+  $("#cancelApiDeleteButton").addEventListener("click", () => closeDialog($("#apiDeleteDialog")));
+  $("#confirmApiDeleteButton").addEventListener("click", deleteApiConnection);
   $("#copyInstallButton").addEventListener("click", async () => {
     try {
       await navigator.clipboard.writeText("dounai-input models install small");
@@ -991,11 +1413,16 @@ function bindEvents() {
     dialog.addEventListener("click", (event) => {
       if (event.target === dialog && dialog.id !== "tokenDialog") closeDialog(dialog);
     });
+    if (dialog.id === "apiDialog") {
+      dialog.addEventListener("close", () => {
+        $("#apiKeyInput").value = "";
+      });
+    }
   });
 }
 
 async function refreshAll() {
-  await Promise.allSettled([checkHealth(), loadProviders(), loadPrivacy(), loadModels(), loadPolicy(true)]);
+  await Promise.allSettled([checkHealth(), loadProviders(), loadPrivacy(), loadModels(), loadApiConnections(), loadPolicy(true)]);
   $("#policyVersion").textContent = state.policy?.version || state.privacy?.policy_version || "1.0";
 }
 

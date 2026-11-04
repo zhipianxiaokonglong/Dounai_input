@@ -4,7 +4,7 @@ requires = ["hatchling>=1.27"]
 
 [project]
 name = "dounai-input"
-version = "0.1.1"
+version = "0.2.0"
 description = "Privacy-first multimodal input gateway for the Dounai AI companion"
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -25,6 +25,7 @@ classifiers = [
   "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 dependencies = [
+  "cryptography>=50,<51",
   "fastapi>=0.115,<1",
   "httpx>=0.28,<1",
   "numpy>=2.0,<3",
@@ -35,6 +36,11 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+keyring = [
+  # Optional: keep the AES master key in the OS credential store instead of
+  # data/.secret.key.  Selected with DOUNAI_SECRET_BACKEND=keyring.
+  "keyring>=24,<27",
+]
 local-asr = [
   "faster-whisper>=1.1,<2",
   "huggingface-hub>=0.27,<2",
@@ -44,8 +50,8 @@ local-asr = [
 ]
 dev = [
   "build>=1.2,<2",
-  "pytest>=8.3,<9",
-  "pytest-cov>=6,<8",
+  "pytest>=9.0.3,<10",
+  "pytest-cov>=7,<8",
   "ruff>=0.9,<1",
 ]
 

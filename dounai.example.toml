@@ -1,8 +1,8 @@
 # 豆奶输入层配置示例
 #
 # 复制为 dounai.toml 后修改。dounai.toml 被 .gitignore 排除，不会提交。
-# 密钥不要写在这里：所有密钥都通过环境变量读取，文件名见各 provider 的
-# api_key_env / token_env。不要提交任何真实密钥或 .env 文件。
+# 这里不写任何密钥：第三方 API 的 Base URL 与 API Key 在 Web 控制台的
+# “API 厂商接入”里填写，密钥用 AES-256-GCM 加密后只保存在本机数据库。
 
 data_dir = "data"
 
@@ -39,7 +39,11 @@ allow_remote_fallback = false
 
 [models]
 active = "offline"
-fallback = ["local-whisper", "dashscope"]
+fallback = ["local-whisper"]
+# 控制台里保存的 API 模型会自动加入候选；这里的 fallback 只写内置 provider。
+
+# 注意：不再有 [providers.dashscope] / [providers.openai] 静态段。
+# 所有 OpenAI 兼容厂商都通过控制台的 API 连接接入，一个连接可以保存多个模型。
 
 [providers.offline]
 enabled = true
@@ -52,25 +56,6 @@ device = "auto"
 # int8 / float16 / float32
 compute_type = "int8"
 language = "zh"
-
-[providers.dashscope]
-enabled = true
-api_key_env = "DASHSCOPE_API_KEY"
-# 如果控制台要求 Workspace 专属域名，替换为
-# https://{WorkspaceId}.cn-beijing.maas.aliyuncs.com/compatible-mode/v1
-base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
-asr_model = "qwen3-asr-flash"
-omni_model = "qwen3.8-omni-flash"
-language = "zh"
-timeout_seconds = 60
-
-[providers.openai]
-enabled = true
-api_key_env = "OPENAI_API_KEY"
-base_url = "https://api.openai.com/v1"
-asr_model = "gpt-4o-transcribe"
-language = "zh"
-timeout_seconds = 60
 
 [providers.custom-http]
 enabled = false

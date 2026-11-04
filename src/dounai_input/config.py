@@ -31,23 +31,6 @@ _DEFAULT_PROVIDERS: dict[str, dict[str, Any]] = {
         "compute_type": "int8",
         "language": "zh",
     },
-    "dashscope": {
-        "enabled": True,
-        "api_key_env": "DASHSCOPE_API_KEY",
-        "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
-        "asr_model": "qwen3-asr-flash",
-        "omni_model": "qwen3.8-omni-flash",
-        "language": "zh",
-        "timeout_seconds": 60,
-    },
-    "openai": {
-        "enabled": True,
-        "api_key_env": "OPENAI_API_KEY",
-        "base_url": "https://api.openai.com/v1",
-        "asr_model": "gpt-4o-transcribe",
-        "language": "zh",
-        "timeout_seconds": 60,
-    },
     "custom-http": {
         "enabled": False,
         "endpoint": "",
@@ -85,7 +68,7 @@ class Settings:
     voiceprint_threshold: float = 0.82
     consent_policy_version: str = CONSENT_POLICY_VERSION
     default_active_provider: str = "offline"
-    fallback_providers: tuple[str, ...] = ("local-whisper", "dashscope")
+    fallback_providers: tuple[str, ...] = ("local-whisper",)
     provider_configs: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
 
     def provider_config(self, provider_id: str) -> dict[str, Any]:
@@ -286,7 +269,7 @@ def load_settings(config_path: Path | str | None = None) -> Settings:
     )
 
     active_provider = _env("DOUNAI_ACTIVE_PROVIDER") or models.get("active") or "offline"
-    fallback_raw = models.get("fallback", ["local-whisper", "dashscope"])
+    fallback_raw = models.get("fallback", ["local-whisper"])
     if not isinstance(fallback_raw, list) or not all(
         isinstance(item, str) for item in fallback_raw
     ):

@@ -43,8 +43,9 @@ def test_every_dom_id_used_by_javascript_exists() -> None:
     assert used - declared == set()
     assert "onclick=" not in html
     assert "style=" not in html
-    assert "http://" not in html
-    assert "https://" not in html
+    # API base URLs are inert placeholder text, not resources loaded by the page.
+    assert '<script src="http' not in html
+    assert '<link rel="stylesheet" href="http' not in html
 
 
 def test_javascript_parses_when_node_is_available() -> None:

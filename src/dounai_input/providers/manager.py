@@ -131,6 +131,34 @@ class ProviderManager:
         info["active"] = True
         return info
 
+    def register_dynamic(self, provider: BaseProvider) -> None:
+        """Install or replace a connection-backed provider under the same id."""
+        self.registry.unregister(provider.manifest.id)
+        self.registry.register(provider, origin="api-connection")
+        self._failures.pop(provider.manifest.id, None)
+
+    def unregister_dynamic(self, provider_id: str, *, fallback: bool = True) -> None:
+        self.registry.unregister(provider_id)
+        self._failures.pop(provider_id, None)
+        if fallback and self._active_id == provider_id:
+            self.fallback_active()
+
+    def fallback_active(self) -> str:
+        """Pick a safe provider after the active one disappears."""
+        for candidate in ("offline", *self.settings.fallback_providers):
+            if self.registry.get(candidate) is not None:
+                self._active_id = candidate
+                self.store.set_setting("active_provider", candidate)
+                self.store.audit_privacy(
+                    "provider_switched", {"provider_id": candidate, "reason": "active_removed"}
+                )
+                return candidate
+        available = self.registry.ids()
+        candidate = available[0] if available else ""
+        self._active_id = candidate
+        self.store.set_setting("active_provider", candidate)
+        return candidate
+
     def _candidate_ids(self) -> list[str]:
         candidates = [self._active_id, *self.settings.fallback_providers]
         seen: set[str] = set()

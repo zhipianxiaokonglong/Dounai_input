@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+import dounai_input
 from dounai_input.cli import main
 
 
@@ -31,7 +32,7 @@ def test_version_flag(capsys: pytest.CaptureFixture[str]) -> None:
     with pytest.raises(SystemExit) as exc_info:
         main(["--version"])
     assert exc_info.value.code == 0
-    assert "0.1.1" in capsys.readouterr().out
+    assert dounai_input.__version__ in capsys.readouterr().out
 
 
 def test_token_command(capsys: pytest.CaptureFixture[str]) -> None:
@@ -51,7 +52,7 @@ def test_providers_and_privacy_status(cli_config: Path, capsys: pytest.CaptureFi
     assert main(["--config", str(cli_config), "providers", "list"]) == 0
     output = capsys.readouterr().out
     assert "offline" in output
-    assert "dashscope" in output
+    assert "local-whisper" in output
 
     assert main(["--config", str(cli_config), "privacy", "status"]) == 0
     payload = json.loads(capsys.readouterr().out)

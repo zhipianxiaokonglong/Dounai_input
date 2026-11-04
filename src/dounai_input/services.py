@@ -4,11 +4,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from .api_connections import ApiConnectionService
 from .config import Settings
 from .ingest import IngestService
 from .media import MediaService
 from .privacy import PrivacyService
 from .providers.manager import ProviderManager
+from .secrets import SecretStore
 from .store import Store
 from .voiceprint import VoiceprintService
 
@@ -22,6 +24,7 @@ class Services:
     providers: ProviderManager
     privacy: PrivacyService
     ingest: IngestService
+    api_connections: ApiConnectionService
 
 
 def create_services(settings: Settings) -> Services:
@@ -37,7 +40,8 @@ def create_services(settings: Settings) -> Services:
         wake_phrase_required=settings.wake_phrase_required,
     )
     providers = ProviderManager(settings, store)
-    privacy = PrivacyService(settings, store, media, voiceprint)
+    api_connections = ApiConnectionService(store, SecretStore(settings.data_dir), providers)
+    privacy = PrivacyService(settings, store, media, voiceprint, api_connections)
     ingest = IngestService(settings, store, media, providers, voiceprint)
     return Services(
         settings=settings,
@@ -47,4 +51,5 @@ def create_services(settings: Settings) -> Services:
         providers=providers,
         privacy=privacy,
         ingest=ingest,
+        api_connections=api_connections,
     )

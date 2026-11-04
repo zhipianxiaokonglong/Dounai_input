@@ -1,6 +1,6 @@
 # 用户指南
 
-本文面向部署和使用豆奶输入层的人。它覆盖四件事：**启动服务、安装本地模型、填写第三方密钥、管理声纹与个人数据**。
+本文面向部署和使用豆奶输入层的人。它覆盖四件事：**启动服务、安装本地模型、接入第三方 API、管理声纹与个人数据**。
 
 > 输入层可以完全独立运行。它不会连接豆奶的其他模块，也不需要下游服务存在。默认的离线直通模式不访问网络。
 
@@ -155,99 +155,173 @@ compute_type = "int8"  # CPU 推荐 int8；GPU 可尝试 float16
 
 音频不会离开设备。首次转写会加载模型，可能比后续请求慢。
 
-## 4. 第三方推荐与 BYOK
+## 4. 接入第三方 API（BYOK）
 
-### 4.1 推荐：阿里云百炼 Qwen3-ASR-Flash
+本层不内置任何厂商的静态配置，也不提供账号或密钥。所有云端模型都在 Web 控制台的 **API 厂商接入** 里现场接入：填写 OpenAI 兼容的 Base URL 与自己的 API Key，服务端调用厂商的 `/models` 列出可用模型，再对选中的模型真实发起文字、图像、语音请求，只有**实测通过**的能力才会被保存。
 
-本层推荐 **Qwen3-ASR-Flash**（阿里云百炼 / Model Studio）作为第三方语音转写模型。理由：
+一个**连接**对应一个厂商端点与一把密钥，连接下可以保存多个模型；每个保存的模型都会自动注册成一个 provider，可像本地模型一样切换、参与能力感知降级。
 
-- 中文、方言与中英混说识别稳定，适合中文情感陪伴产品；
+> 0.2.0 起，静态的 `dashscope` / `openai` provider 与 `DASHSCOPE_API_KEY` / `OPENAI_API_KEY` 已移除，也不需要把密钥写进环境变量。`dounai.toml` 里的 `[providers.dashscope]`、`[providers.openai]` 会被忽略，`[models].fallback` 中的旧 provider id 会被跳过。
+
+### 4.1 推荐厂商
+
+中文情感陪伴场景推荐 **Qwen3-ASR-Flash**（阿里云百炼 / Model Studio）：
+
+- 中文、方言与中英混说识别稳定；
 - 单次调用即完成转写，无需本地 GPU；
-- 同一账号体系可继续使用 **Qwen3.8-Omni-Flash** 做图文音全模态理解；
-- 提供 OpenAI 兼容协议，适配成本低。
+- 同一账号体系可继续用 **Qwen3.8-Omni-Flash** 做图文音全模态理解；
+- 提供 OpenAI 兼容协议，可直接用本节的连接流程接入。
 
-这不是对绝对准确率的普遍担保；不同口音、噪声和领域词汇仍应做自己的抽样评估。若你的用户主要在海外或已有 OpenAI 企业协议，内置的 OpenAI provider 可作为备选。
+这不是对绝对准确率的担保；不同口音、噪声和领域词汇仍应做自己的抽样评估。内置预设如下，也可以在「预设」里选「手动输入」填任意 OpenAI 兼容端点：
 
-### 4.2 注册与获取密钥
+| 预设 | Base URL | 说明 |
+| --- | --- | --- |
+| 阿里云百炼 Qwen（推荐） | `https://dashscope.aliyuncs.com/compatible-mode/v1` | 中文语音转写首选；推荐模型 `qwen3-asr-flash`、`qwen3.8-omni-flash` |
+| OpenAI | `https://api.openai.com/v1` | 官方转写与视觉接口；需要能直连 OpenAI 的网络 |
+| OpenRouter | `https://openrouter.ai/api/v1` | 多厂商聚合，模型列表很大，按需搜索勾选 |
+| SiliconFlow | `https://api.siliconflow.cn/v1` | 国内 OpenAI 兼容聚合，可用模型以账号为准 |
+| Ollama（本机） | `http://127.0.0.1:11434/v1` | 完全本地；必须同时勾选「允许访问本机/内网地址」与「允许明文 HTTP」 |
 
-我们**不提供账号或 API Key**，也不会代付费用。步骤：
+百炼的 API Key 与地域绑定。若控制台给的是 Workspace 专属域名（形如 `https://{WorkspaceId}.cn-beijing.maas.aliyuncs.com/compatible-mode/v1`），把 `{WorkspaceId}` 换成自己的 ID，在「手动输入」里填写该域名即可，不需要改配置文件。
 
-1. 打开 [阿里云百炼控制台](https://bailian.console.aliyun.com/)，按页面提示开通模型服务；
-2. 在 [API Key 管理](https://help.aliyun.com/zh/model-studio/get-api-key) 创建密钥；
-3. 确认你的服务地域（北京、新加坡等）。API Key 与地域相关；
-4. 把密钥只保存到环境变量。
+### 4.2 在控制台接入
 
-PowerShell（当前会话）：
+1. 打开 <http://127.0.0.1:8000/>，在「模型与本地安装」卡片里找到 **API 厂商接入**，点「+ 添加连接」。
+2. 在「接入厂商 API」对话框里选「预设」。列表第一项是「手动输入」，其后是各预设，默认选中推荐的阿里云百炼。选预设会填好 Base URL 与连接名称；连接名称可以改，最长 80 字符。
+3. 粘贴该厂商的 API Key。输入框不回显；密钥只在本机加密保存，请求厂商时才在内存中即时解密。
+4. 只有本机或内网端点才需要勾选权限复选框（见 4.3）。
+5. 点「发现模型」。服务端请求 `GET {base_url}/models`，结果列在「发现的模型」里，可以按 ID 搜索过滤。列表里没有目标模型时，勾选「模型列表没有目标模型，手动输入 ID」再填模型 ID。
+6. 勾选要用的模型（每个连接最多 20 个），它们会进入「待保存的模型」。
+7. 点「测试所选模型能力」。服务端对每个模型依次实测文字、图像、语音，结果显示在「测试结果」：`通过 / 不支持 / 错误 / 未测试`；语音通过时还会标出实际使用的转写协议。
+8. 点「保存连接」。只有至少一项能力通过的模型才会被保存；全部能力都不通的模型会被拒绝。
 
-```powershell
-$env:DASHSCOPE_API_KEY = "sk-你的密钥"
-dounai-input providers activate dashscope
-```
+保存之后：
 
-macOS / Linux：
+- 顶部「当前模型」下拉框会多出 `连接名 · 模型 ID` 条目，选中即可切换。切到云端模型前控制台会确认「语音会被发送到该第三方厂商」，声纹模板始终留在本机。
+- 「API 厂商接入」下的连接卡片显示 `Base URL · key <指纹>`；每个模型标签显示能力（文本/图像/语音）和「使用中 / 切换 / 移除模型」。
+- 卡片上的「重新发现」只用已保存的密钥重新拉取模型列表，**不会**自动改写已保存模型的能力。厂商更新模型后需要重新测试该模型。
+- 卡片上的「删除」会删除该连接、其下所有模型与本机密文；如果它是当前模型，会自动切回「离线直通」。
+
+验证：切换后上传一段中文语音，事件里应出现 `asr_text` 且 `metadata.asr_status="completed"`，响应头 `X-Dounai-Provider` 是 `api-<连接短 id>-<模型 slug>`。若失败，先看第 9 节的排查步骤，也可以运行 `dounai-input doctor` 检查配置与适配器状态。
+
+### 4.3 网络权限与 URL 规则
+
+厂商 URL 由服务端校验，不是简单拼接：
+
+- 默认只接受 `https://`。明文 `http://` 必须显式允许（控制台「允许明文 HTTP」/ `allow_http`），只应用于可信本机或内网；
+- 私网与回环地址默认拒绝。`127.0.0.1`、`10.x.x.x`、`192.168.x.x`、`172.16–31.x.x` 等需要「允许访问本机/内网地址」/ `allow_private`；Ollama 预设会替你勾好这两项；
+- 云元数据地址（如 `169.254.169.254`、`metadata.google.internal`）始终拒绝，任何开关都无法放行；
+- URL 不能包含用户名密码、查询串或 fragment，最长 512 字符；
+- 域名会先解析，**所有**解析结果都必须满足上述规则；
+- 请求不跟随重定向，厂商返回 `3xx` 视为失败。
+
+创建连接、发现模型、测试模型与「重新发现」都会解析域名，并逐条校验解析结果；列连接、读详情这些只读操作不会触发 DNS。被策略拒绝的 URL 返回 422 `invalid_input`，密钥错误返回 422 `api_auth_failed`，厂商网络/服务异常返回 502 `api_discovery_failed`。
+
+### 4.4 命令行与 API
+
+控制台调用的就是下面这些接口；需要脚本化或用远程实例时可直接调用。设置了 `DOUNAI_API_TOKEN` 时，每个请求都要带 `Authorization: Bearer $DOUNAI_API_TOKEN`。
+
+发现模型（只读，不保存任何内容）：
 
 ```bash
-export DASHSCOPE_API_KEY="sk-你的密钥"
-dounai-input providers activate dashscope
+curl -X POST http://127.0.0.1:8000/v1/api-connections/discover \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $DOUNAI_API_TOKEN" \
+  -d '{
+    "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    "api_key": "<你的密钥>"
+  }'
 ```
 
-持久化环境变量由你的 shell 或部署平台管理。也可以把密钥写进本机 `.env`（已被 Git 忽略）：
+测试单个模型：
 
 ```bash
-cp .env.example .env
-# 编辑 .env，只填 DASHSCOPE_API_KEY
+curl -X POST http://127.0.0.1:8000/v1/api-connections/probe \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $DOUNAI_API_TOKEN" \
+  -d '{
+    "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    "api_key": "<你的密钥>",
+    "model_id": "qwen3-asr-flash"
+  }'
 ```
 
-`.env` 仅由 CLI/服务启动时读取；**绝不要提交它**。
+保存连接。`models[].probes` 用上一步的结果；能力只按 `probes` 中 `status` 为 `supported` 的项计算，音频通过时必须带 `transcription_protocol`：
 
-### 4.3 配置 Workspace 专属域名
-
-默认使用：
-
-```text
-https://dashscope.aliyuncs.com/compatible-mode/v1
+```bash
+curl -X POST http://127.0.0.1:8000/v1/api-connections \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $DOUNAI_API_TOKEN" \
+  -d '{
+    "name": "百炼 Qwen",
+    "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    "api_key": "<你的密钥>",
+    "models": [
+      {
+        "model_id": "qwen3-asr-flash",
+        "capabilities": ["text", "image", "audio"],
+        "transcription_protocol": "audio_transcriptions",
+        "probes": {
+          "text": {"status": "supported", "detail": "chat completion accepted", "latency_ms": 412},
+          "image": {"status": "supported", "detail": "image input accepted", "latency_ms": 780},
+          "audio": {"status": "supported", "detail": "audio transcriptions accepted", "latency_ms": 1260}
+        }
+      }
+    ]
+  }'
 ```
 
-若控制台要求 Workspace 专属域名，在 `dounai.toml` 中替换：
+查看、重新发现与删除：
 
-```toml
-[providers.dashscope]
-base_url = "https://{WorkspaceId}.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
-asr_model = "qwen3-asr-flash"
+```bash
+curl -H "Authorization: Bearer $DOUNAI_API_TOKEN" \
+  http://127.0.0.1:8000/v1/api-connections
+
+curl -X POST -H "Authorization: Bearer $DOUNAI_API_TOKEN" \
+  http://127.0.0.1:8000/v1/api-connections/conn_xxxxxxxx/refresh
+
+curl -X DELETE -H "Authorization: Bearer $DOUNAI_API_TOKEN" \
+  http://127.0.0.1:8000/v1/api-connections/conn_xxxxxxxx
 ```
 
-把 `{WorkspaceId}` 换成自己的 ID。改完重启服务。
-
-### 4.4 验证
+轮换密钥用 `PATCH /v1/api-connections/{id}`，只传 `api_key`，省略的字段不变；改过 `api_key` 或 `base_url` 后建议重新测试模型能力，旧的能力结论不会自动更新。保存后也可以用 CLI 切换：
 
 ```bash
 dounai-input providers list
+dounai-input providers activate api-1a2b3c4d-qwen3-asr-flash
 ```
 
-`dashscope` 应显示「可用」。然后在 Web 控制台上传一段中文语音，事件中的 `asr_text` 应出现转写文本且 `asr_status="completed"`；响应头 `X-Dounai-Provider` 为 `dashscope`。
-
-若失败：
-
-```bash
-dounai-input doctor
-```
-
-常见原因是密钥未进入当前进程、地域不匹配、Workspace 域名错误或网络无法访问厂商。请求失败时输入层仍会生成语音事件，`asr_text` 为空、`asr_status="unavailable"`，并在响应头标记降级。
+完整字段、错误码与响应示例见 [API 参考](api.md#api-连接byok)。
 
 ### 4.5 密钥安全
 
-- 密钥只从 `api_key_env` 指向的环境变量读取，不写入 SQLite，不返回给 Web 前端，不打印到日志。
-- 日志里只有厂商 ID、HTTP 状态码和错误类别。
-- 前端只显示「未配置/可用」状态，不会回显密钥。
-- 如果怀疑泄漏，立即在厂商控制台轮换密钥。输入层无需改代码，重启读取新值即可。
+- **入库即加密**：API Key 用 AES-256-GCM 加密后写入本机 SQLite，明文只在服务端内存中短暂存在，仅用于请求该厂商。
+- **不回显**：`GET /v1/api-connections` 只返回 `key_fingerprint`——密钥 SHA-256 的 10 字符短标识，无法反推密钥；响应、日志与导出里都没有明文或密文。
+- **主密钥在本机**：默认是 `data/.secret.key`（POSIX 上以 0600 创建，与数据库同目录）。想把它移出数据目录，可安装可选依赖并指定后端：
+
+  ```bash
+  pip install -e ".[keyring]"
+  # macOS / Linux
+  export DOUNAI_SECRET_BACKEND=keyring
+  # PowerShell
+  # $env:DOUNAI_SECRET_BACKEND = "keyring"
+  ```
+
+  `DOUNAI_SECRET_BACKEND` 取值 `auto`（默认：优先系统钥匙串，不可用时回退文件）、`file`、`keyring`（要求系统钥匙串可用，否则保存或读取连接时会报错）。首次从文件切到钥匙串时，已有主密钥会自动迁移，不需要重建连接。Windows 凭据管理器、macOS 钥匙串与 Linux Secret Service 都可用。
+- **删除即清除**：控制台「删除全部个人数据」或 `DELETE /v1/privacy/data?confirm=true` 会删除所有连接、密文与主密钥；只删掉最后一个连接时也会删除主密钥。导出 ZIP 只包含连接名称、Base URL、指纹与模型 ID/能力，不含密钥。
+- **仍有的边界**：同一操作系统账户下的恶意进程可以读到 `.secret.key`（或调用钥匙串）并解密。加密防的是数据库或数据目录被单独复制、备份泄漏，不是本机进程隔离。详见 [隐私与安全设计](privacy.md)。
+- **怀疑泄漏**：先在厂商控制台轮换密钥，再用 `PATCH /v1/api-connections/{id}` 更新，或删除连接后重建，最后确认旧密钥已经失效。
 
 ## 5. 模型切换与降级
 
 在 Web 控制台顶部「当前模型」下拉框即可切换，无需重启。也可以：
 
 ```bash
-dounai-input providers activate openai
+dounai-input providers list
+dounai-input providers activate api-1a2b3c4d-qwen3-asr-flash
 ```
+
+API 连接派生的 provider id 形如 `api-<连接短 id>-<模型 slug>`，以 `providers list` 的实际输出为准；删除连接或模型后旧 id 不再存在。
 
 - 选择会写入本地 SQLite，重启后保留。
 - 会话上下文保存在本地事件表中。转写请求会携带最近几条文本/转写作为上下文（厂商支持时）。
@@ -343,8 +417,8 @@ wake_phrase_required = false
 
 - **数据最小化**：只在有输入时保存事件和媒体；不采集通讯录、位置、设备标识或遥测。
 - **保留期**：`retention_hours` 默认 72 小时；到期删除事件与关联媒体。声纹模板与授权记录不按时间删除，等你主动删除或撤回。
-- **导出**：ZIP 包含清单、事件、媒体文件、授权记录、隐私操作记录、声纹模板（如有）和政策文本。导出文件包含生物特征，请妥善保管。
-- **删除全部**：删除事件、媒体、声纹模板、授权记录和隐私审计记录。删除后媒体 URL 立即失效；之后会写入一条不含生物特征的操作记录，证明删除发生。
+- **导出**：ZIP 包含清单、事件、媒体文件、授权记录、隐私操作记录、声纹模板（如有）、API 连接元数据（名称、Base URL、密钥指纹、模型 ID 与能力）和政策文本。导出文件包含生物特征；密钥明文与密文都不会出现在导出包里，请仍妥善保管。
+- **删除全部**：删除事件、媒体、声纹模板、授权记录、隐私审计记录、API 连接与其加密密钥（最后一个连接被删除时主密钥也一并清除）。删除后媒体 URL 立即失效；之后会写入一条不含生物特征的操作记录，证明删除发生。
 - **本地存储**：数据在 `data/dounai.sqlite3` 与 `data/media/`。数据库和媒体文件权限尽量收紧为仅当前用户可读；请确保操作系统账户本身可信。
 
 详细的安全边界见 [隐私与安全设计](privacy.md)。
@@ -378,7 +452,7 @@ dounai-input serve --host 0.0.0.0
 
 1. `dounai-input providers list` 看当前 provider 是否「可用」；
 2. 本地模型看是否安装了可选依赖与权重；
-3. 云端看 `DASHSCOPE_API_KEY`/`OPENAI_API_KEY` 是否在当前进程环境中；
+3. 云端看「API 厂商接入」里是否有保存好的连接与模型，并确认顶部「当前模型」选的就是它；`dounai-input providers list` 中 `api-…` 条目应为「可用」；
 4. 看响应头 `X-Dounai-Degraded`；为 `true` 说明发生了降级；
 5. 查看服务日志（不会包含音频内容），确认超时、认证失败、限流或网络错误。
 
@@ -416,6 +490,31 @@ dounai-input serve --port 8010
 ### 数据太大
 
 调小 `media_retention_hours`，或定期调用 `DELETE /v1/privacy/data?confirm=true`。删除本地模型用 `dounai-input models remove <id> --yes`。
+
+### 「发现模型」失败
+
+按顺序检查：
+
+1. Base URL 是否是该厂商文档给的 OpenAI 兼容前缀，通常以 `/v1` 结尾（百炼是 `.../compatible-mode/v1`）。少了 `/v1` 会返回 404；
+2. Key 是否完整、是否属于该地域或 Workspace；百炼的 Key 与地域绑定，Workspace 专属域名要换成自己的；
+3. 本机/内网端点（如 Ollama）是否**同时**勾选了「允许访问本机/内网地址」与「允许明文 HTTP」；
+4. 服务进程能否访问外网（代理、防火墙、容器网络）；容器里的 `127.0.0.1` 不是宿主机；
+5. 看返回码区分原因：422 `invalid_input` 是 URL 或参数被策略拒绝，422 `api_auth_failed` 是密钥或端点不对，502 `api_discovery_failed` 是网络或厂商异常。错误信息不会包含密钥。
+
+### 所有能力都测试不通过
+
+- 该模型可能不是对话/转写模型（embedding、rerank、纯图像生成通常不提供 `/chat/completions`）；
+- 账号未开通该模型，或模型 ID 与账号地域不匹配；
+- 只需要语音转写时，只要「语音」一项通过就能保存，文字/图像显示「不支持」不影响转写；
+- 「未测试」表示根本没有发出请求（例如鉴权先失败了），不是能力结论；
+- 语音探测会先试 `/audio/transcriptions`，再试 `chat/completions` + `input_audio`；两条都不通说明该端点不使用这两种 OpenAI 兼容形态，需要换模型；
+- 既要转写又要图像理解时，在同一连接下分别保存 `qwen3-asr-flash` 与一个多模态模型即可，不需要建两个连接。
+
+### 删除连接或移除模型后没有转写了
+
+- 如果删掉的是当前模型，服务会自动切回「离线直通」：事件仍然生成，但 `asr_text` 为空、`metadata.asr_status="unavailable"`、响应头 `X-Dounai-Degraded: true`；
+- 在顶部「当前模型」里重新选一个可用模型即可恢复，不需要重启服务；
+- 删除最后一个连接会连主密钥一起删除，重新接入时会生成新的主密钥，旧密文无法也无需恢复。
 
 ## 10. 卸载
 

@@ -202,7 +202,7 @@ def test_legacy_v1_database_is_migrated(tmp_path, settings) -> None:
         version = connection.execute(
             "SELECT value FROM schema_meta WHERE key = 'schema_version'"
         ).fetchone()[0]
-    assert version == "2"
+    assert version == "3"
 
 
 def test_store_permissions_are_private_on_posix(settings) -> None:

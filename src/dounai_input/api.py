@@ -63,6 +63,59 @@ class ProviderSwitch(BaseModel):
     provider_id: str = Field(min_length=1, max_length=64)
 
 
+class ApiDiscoverRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    base_url: str = Field(min_length=1, max_length=512)
+    api_key: str = Field(min_length=1, max_length=4096)
+    allow_private: bool = False
+    allow_http: bool = False
+
+
+class ApiProbeRequest(ApiDiscoverRequest):
+    model_id: str = Field(min_length=1, max_length=200)
+
+
+class ApiProbeResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    status: str
+    detail: str = ""
+    latency_ms: int = 0
+
+
+class ApiModelSelection(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    model_id: str = Field(min_length=1, max_length=200)
+    # Accepted for older clients but not trusted: the server derives the saved
+    # capabilities from the probe statuses below.
+    capabilities: list[str] = Field(default_factory=list, max_length=3)
+    probes: dict[str, ApiProbeResult]
+    transcription_protocol: str | None = None
+
+
+class ApiConnectionCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1, max_length=80)
+    base_url: str = Field(min_length=1, max_length=512)
+    api_key: str = Field(min_length=1, max_length=4096)
+    allow_private: bool = False
+    allow_http: bool = False
+    models: list[ApiModelSelection] = Field(min_length=1, max_length=20)
+
+
+class ApiConnectionUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str | None = Field(default=None, min_length=1, max_length=80)
+    base_url: str | None = Field(default=None, min_length=1, max_length=512)
+    api_key: str | None = Field(default=None, min_length=1, max_length=4096)
+    allow_private: bool | None = None
+    allow_http: bool | None = None
+
+
 class PrivacySettingsUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -134,6 +187,113 @@ def build_router(settings: Settings) -> APIRouter:
             ),
             "weights_committed_to_repo": False,
         }
+
+    @router.get("/api-presets", tags=["api-connections"])
+    async def api_presets(request: Request) -> dict[str, Any]:
+        service = _services(request)["api_connections"]
+        return {"presets": service.presets()}
+
+    @router.post("/api-connections/discover", tags=["api-connections"])
+    async def discover_api_models(payload: ApiDiscoverRequest, request: Request) -> dict[str, Any]:
+        """Fetch /models with a temporary URL+key. Nothing is persisted."""
+        service = _services(request)["api_connections"]
+        return await service.discover(
+            base_url=payload.base_url,
+            api_key=payload.api_key,
+            allow_private=payload.allow_private,
+            allow_http=payload.allow_http,
+        )
+
+    @router.post("/api-connections/probe", tags=["api-connections"])
+    async def probe_api_model(payload: ApiProbeRequest, request: Request) -> dict[str, Any]:
+        """Probe text/image/audio capabilities with synthetic data only."""
+        service = _services(request)["api_connections"]
+        return await service.probe(
+            base_url=payload.base_url,
+            api_key=payload.api_key,
+            model_id=payload.model_id,
+            allow_private=payload.allow_private,
+            allow_http=payload.allow_http,
+        )
+
+    @router.get("/api-connections", tags=["api-connections"])
+    async def list_api_connections(request: Request) -> dict[str, Any]:
+        service = _services(request)["api_connections"]
+        return {"connections": service.list_connections()}
+
+    @router.get("/api-connections/{connection_id}", tags=["api-connections"])
+    async def get_api_connection(connection_id: str, request: Request) -> dict[str, Any]:
+        service = _services(request)["api_connections"]
+        return service.get_connection(connection_id)
+
+    @router.post("/api-connections", status_code=201, tags=["api-connections"])
+    async def create_api_connection(
+        payload: ApiConnectionCreate, request: Request
+    ) -> dict[str, Any]:
+        service = _services(request)["api_connections"]
+        # The console probes through /api-connections/probe first.  This endpoint
+        # trusts the caller's probe report: the gateway is a single-user local
+        # service, so a caller that can reach it can already configure any vendor.
+        probes = [
+            {
+                "model_id": model.model_id,
+                "capabilities": model.capabilities,
+                "probes": {name: value.model_dump() for name, value in model.probes.items()},
+                "transcription_protocol": model.transcription_protocol,
+            }
+            for model in payload.models
+        ]
+        return service.create_connection(
+            name=payload.name,
+            base_url=payload.base_url,
+            api_key=payload.api_key,
+            allow_private=payload.allow_private,
+            allow_http=payload.allow_http,
+            probes=probes,
+        )
+
+    @router.patch("/api-connections/{connection_id}", tags=["api-connections"])
+    async def update_api_connection(
+        connection_id: str, payload: ApiConnectionUpdate, request: Request
+    ) -> dict[str, Any]:
+        service = _services(request)["api_connections"]
+        return service.update_connection(
+            connection_id,
+            name=payload.name,
+            base_url=payload.base_url,
+            api_key=payload.api_key,
+            allow_private=payload.allow_private,
+            allow_http=payload.allow_http,
+        )
+
+    @router.delete("/api-connections/{connection_id}", tags=["api-connections"])
+    async def delete_api_connection(connection_id: str, request: Request) -> dict[str, Any]:
+        service = _services(request)["api_connections"]
+        return service.delete_connection(connection_id)
+
+    @router.post("/api-connections/{connection_id}/refresh", tags=["api-connections"])
+    async def refresh_api_connection(connection_id: str, request: Request) -> dict[str, Any]:
+        service = _services(request)["api_connections"]
+        models = await service.refresh_models(connection_id)
+        return {"connection_id": connection_id, "models": models}
+
+    @router.post(
+        "/api-connections/{connection_id}/models/{model_id}/probe", tags=["api-connections"]
+    )
+    async def probe_stored_model(
+        connection_id: str, model_id: str, request: Request
+    ) -> dict[str, Any]:
+        service = _services(request)["api_connections"]
+        return await service.probe_stored_model(connection_id, model_id)
+
+    @router.delete(
+        "/api-connections/{connection_id}/models/{provider_id}", tags=["api-connections"]
+    )
+    async def delete_api_model(
+        connection_id: str, provider_id: str, request: Request
+    ) -> dict[str, Any]:
+        service = _services(request)["api_connections"]
+        return service.delete_model(connection_id, provider_id)
 
     @router.post("/inputs/text", status_code=201, tags=["inputs"])
     async def ingest_text(payload: TextInput, request: Request) -> JSONResponse:
@@ -384,8 +544,10 @@ def build_app(settings: Settings) -> FastAPI:
         "providers": services.providers,
         "privacy": services.privacy,
         "ingest": services.ingest,
+        "api_connections": services.api_connections,
     }
 
+    app.state.services["api_connections"].resync()
     app.include_router(build_router(settings))
     _install_middleware(app, settings)
     _install_error_handlers(app)

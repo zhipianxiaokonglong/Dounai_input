@@ -201,11 +201,27 @@ curl -X POST http://127.0.0.1:8000/v1/inputs/audio \
       "active": true,
       "circuit_open": false,
       "consecutive_failures": 0
+    },
+    {
+      "id": "api-1a2b3c4d-qwen3-asr-flash",
+      "name": "阿里云百炼 Qwen · qwen3-asr-flash",
+      "version": "1.0.0",
+      "description": "用户接入的 OpenAI 兼容 API：…",
+      "capabilities": ["text", "image", "audio"],
+      "privacy": "remote",
+      "requires_api_key": true,
+      "can_transcribe": true,
+      "available": true,
+      "unavailable_reason": null,
+      "homepage": null,
+      "active": false,
+      "circuit_open": false,
+      "consecutive_failures": 0
     }
   ],
   "status": {
     "active_provider": "offline",
-    "fallback_chain": ["local-whisper", "dashscope"],
+    "fallback_chain": ["local-whisper"],
     "allow_remote_fallback": false,
     "locality_guard": "Remote fallback candidates are skipped unless …",
     "plugin_errors": []
@@ -213,15 +229,180 @@ curl -X POST http://127.0.0.1:8000/v1/inputs/audio \
 }
 ```
 
-**不会返回任何密钥**。云端适配器的 `base_url` 会展示以便调试，但密钥只存在服务端环境变量。
+**不会返回任何密钥**。云端适配器的 `base_url` 会展示以便调试，但密钥只以
+AES-256-GCM 密文保存在本机数据库，接口只返回不可逆的 `key_fingerprint`。
+`api-<连接短 id>-<模型 slug>` 形式的 provider 来自 API 连接，见下文。
 
 ### `PUT /v1/providers/active`
 
 ```json
-{"provider_id": "dashscope"}
+{"provider_id": "api-1a2b3c4d-qwen3-asr-flash"}
 ```
 
 运行时不重启切换，写入本地 SQLite。未知 provider 返回 404。允许切换到「当前不可用但已安装」的适配器；注册但无密钥的适配器仍会显示在列表里，便于配置和排障。切换是隐私相关的数据流向决定，客户端应向用户明确展示 `privacy: remote`。
+
+### API 连接（BYOK）
+
+本层不内置任何厂商的静态配置。第三方模型要先建立“连接”，连接里再保存一个或多个
+模型；每个保存的模型自动成为一个 provider，可像内置 provider 一样切换、降级。
+
+连接与密钥都保存在本机 SQLite。`api_key` 只用于请求厂商，不会出现在任何响应、
+日志或导出中。厂商 URL 默认只允许 HTTPS；私网/回环地址需要 `allow_private=true`，
+明文 HTTP 需要 `allow_http=true`；云元数据地址始终拒绝，且不跟随重定向。
+
+#### `GET /v1/api-presets`
+
+返回预设厂商（阿里云百炼、OpenAI、OpenRouter、SiliconFlow、本机 Ollama）：
+
+```json
+{
+  "presets": [
+    {
+      "id": "dashscope",
+      "name": "阿里云百炼 Qwen",
+      "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+      "docs_url": "https://bailian.console.aliyun.com/",
+      "note": "中文、方言与中英混说场景推荐；使用 qwen3-asr-flash 做语音转写。",
+      "recommended_models": ["qwen3-asr-flash", "qwen3.8-omni-flash"],
+      "requires_http_permission": false,
+      "requires_private_permission": false,
+      "recommended": true
+    }
+  ]
+}
+```
+
+#### `POST /v1/api-connections/discover`
+
+```json
+{
+  "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+  "api_key": "sk-…",
+  "allow_private": false,
+  "allow_http": false
+}
+```
+
+返回 `{base_url, resolved_addresses, models:[{id, owned_by}]}`。只调用厂商的
+`GET {base_url}/models`，不会保存任何内容。密钥错误返回 422 `api_auth_failed`；
+网络或厂商异常返回 502 `api_discovery_failed`；URL 被策略拒绝返回 422
+`invalid_input`。
+
+#### `POST /v1/api-connections/probe`
+
+在上面的字段上增加 `model_id`，逐项实测：
+
+| 能力 | 请求 |
+| --- | --- |
+| `text` | `POST {base_url}/chat/completions`，一条极短文本 |
+| `image` | `POST {base_url}/chat/completions`，`image_url` 为 1×1 PNG |
+| `audio` | 先试 `POST {base_url}/audio/transcriptions`，失败再试 `chat/completions` + `input_audio` |
+
+```json
+{
+  "model_id": "qwen3-asr-flash",
+  "capabilities": ["text", "image", "audio"],
+  "transcription_protocol": "audio_transcriptions",
+  "probes": {
+    "text": {"status": "supported", "detail": "chat.completions 返回 200", "latency_ms": 412},
+    "image": {"status": "supported", "detail": "image_url 返回 200", "latency_ms": 780},
+    "audio": {"status": "supported", "detail": "audio/transcriptions 返回文本", "latency_ms": 1260}
+  }
+}
+```
+
+`status` 为 `supported / unsupported / error / not_tested`；`capabilities` 只包含
+`supported` 的项。音频可用时 `transcription_protocol` 为 `audio_transcriptions`
+或 `chat_audio`。探测只发送上述合成样本，不会发送用户事件、媒体或声纹。
+
+#### `GET /v1/api-connections`
+
+```json
+{
+  "connections": [
+    {
+      "id": "conn_1a2b3c4d5e6f",
+      "name": "阿里云百炼 Qwen",
+      "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+      "key_fingerprint": "q7Xh…",
+      "allow_private": false,
+      "allow_http": false,
+      "created_at": "2026-11-04T09:30:00Z",
+      "updated_at": "2026-11-04T09:30:00Z",
+      "models": [
+        {
+          "provider_id": "api-1a2b3c4d-qwen3-asr-flash",
+          "model_id": "qwen3-asr-flash",
+          "display_name": "qwen3-asr-flash",
+          "capabilities": ["text", "image", "audio"],
+          "transcription_protocol": "audio_transcriptions",
+          "probes": {"text": {"status": "supported", "detail": "…", "latency_ms": 412}},
+          "updated_at": "2026-11-04T09:30:00Z",
+          "active": true
+        }
+      ]
+    }
+  ]
+}
+```
+
+`key_fingerprint` 是密钥的不可逆短标识，只用于辨认；响应里永远没有 `api_key`
+或密文。
+
+#### `POST /v1/api-connections`
+
+```json
+{
+  "name": "阿里云百炼 Qwen",
+  "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+  "api_key": "sk-…",
+  "allow_private": false,
+  "allow_http": false,
+  "models": [
+    {
+      "model_id": "qwen3-asr-flash",
+      "capabilities": ["text", "image", "audio"],
+      "transcription_protocol": "audio_transcriptions",
+      "probes": {
+        "text": {"status": "supported", "detail": "…", "latency_ms": 412},
+        "image": {"status": "supported", "detail": "…", "latency_ms": 780},
+        "audio": {"status": "supported", "detail": "…", "latency_ms": 1260}
+      }
+    }
+  ]
+}
+```
+
+`201` 返回连接视图。约束：名称 1–80 字符；`base_url` 最长 512；`api_key`
+1–4096 字符；每个连接最多 20 个模型；每个模型至少要有一个 `supported` 能力；
+音频可用时必须带 `transcription_protocol`。`capabilities` 可以省略——服务端
+始终按 `probes` 重新推导。控制台总是把 `probe` 的结果原样提交；直接调用本接口
+时，能力结论由调用方提交（本机单用户信任模型，见
+[privacy.md](privacy.md)）。
+
+#### `GET /v1/api-connections/{id}`、`PATCH`、`DELETE`
+
+`PATCH` 可改 `name`、`base_url`、`api_key`（轮换）、`allow_private`、`allow_http`；
+省略的字段不变，响应不回显密钥。已有模型的探测结果会保留，改动 `base_url`
+后应重新探测对应模型。`DELETE` 删除连接与全部模型；若当前 provider
+属于该连接，会自动切回 `offline`，返回
+`{deleted, connection_id, models_removed, active_provider}`。
+
+#### `POST /v1/api-connections/{id}/refresh`
+
+用已保存的密钥重新调用 `GET {base_url}/models`，返回
+`{connection_id, models:[{id, owned_by}]}`。只发现，不自动更新已保存模型的能力；
+能力变化需要重新探测。
+
+#### `POST /v1/api-connections/{id}/models/{model_id}/probe`
+
+用已保存的连接重新探测某个模型；若该模型已保存，能力与探测结果会被覆盖，并立即
+重建 provider。
+
+#### `DELETE /v1/api-connections/{id}/models/{provider_id}`
+
+只删除一个模型，路径参数是 `provider_id` 而不是 `model_id`；如果它是当前模型，
+会自动回退，`active_provider` 随响应返回。
 
 ### `GET /v1/models`
 
@@ -345,7 +526,7 @@ curl -X POST http://127.0.0.1:8000/v1/privacy/voiceprint/enroll \
 ```json
 {
   "status": "ok",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "contract_version": "1.1",
   "active_provider": "offline",
   "config_warnings": [],
@@ -406,10 +587,12 @@ curl -X POST https://gateway.example.com/v1/inputs/audio \
 | 403 | `privacy_disabled` | 声纹开关关闭 |
 | 403 | `forbidden_origin` | 浏览器跨站写请求 |
 | 404 | `not_found` | 事件/provider/媒体不存在 |
-| 409 | `conflict` | 政策版本不匹配、provider 冲突 |
+| 409 | `conflict` | 政策版本不匹配、provider 冲突、密钥无法解密 |
 | 413 | `payload_too_large` | 请求体或文件超过限制 |
 | 415 | `unsupported_media` | 魔数/格式不支持 |
-| 422 | `invalid_input` / `invalid_request` | 参数、文本、样本校验失败 |
+| 422 | `invalid_input` / `invalid_request` | 参数、文本、样本、厂商 URL 校验失败 |
+| 422 | `api_auth_failed` / `api_connection_error` | 厂商密钥错误或连接不可用 |
+| 502 | `api_discovery_failed` | 模型发现时厂商网络/服务异常 |
 | 500 | `internal_error` | 未预期内部错误（不返回堆栈） |
 
 模型厂商的错误不会直接变成 5xx 泄漏给客户端；语音场景会降级并仍返回 201。图片/文字不调用模型，因此没有厂商错误。
@@ -435,6 +618,10 @@ curl -X POST https://gateway.example.com/v1/inputs/audio \
 | 上下文 | 最近 3 条文本/转写 |
 | 声纹样本 | 3–8 段，每段 1–20 秒 |
 | 声纹模板 | 80 维 float32 |
+| API 连接名称 | 1–80 字符 |
+| 每个连接的模型 | 最多 20 个 |
+| 厂商 Base URL | 最长 512 字符，必须绝对 URL |
+| 厂商 API Key | 1–4096 字符，只以密文入库 |
 
 ## 10. 版本与兼容
 
@@ -447,6 +634,12 @@ curl -X POST https://gateway.example.com/v1/inputs/audio \
 - v1.1 不新增必需字段，旧 v1.0 消费方仍可解析；新消费方必须检查
   `asr_status`。后续任何新增**必需**字段都视为破坏性变更，必须先升级契约并
   同步下游。
+
+包版本 **0.2.0** 只改变 provider 的接入方式，事件契约仍为 v1.1：静态的
+`dashscope` / `openai` provider 与 `DASHSCOPE_API_KEY` / `OPENAI_API_KEY`
+已移除，改用运行时的 API 连接（`/v1/api-connections*`）。已有 `dounai.toml`
+中的 `[providers.dashscope]`、`[providers.openai]` 会被忽略；`[models].fallback`
+里的旧 provider id 也会被跳过，默认只回退到 `local-whisper`。
 
 会话与来源不进入事件体，通过以下响应头稳定回传：
 

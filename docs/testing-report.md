@@ -1,25 +1,26 @@
 # 测试、故障注入与根因分析报告
 
-> 版本：0.1.1（contract v1.1）
+> 版本：0.2.0（contract v1.1）
 >
-> 测试日期：2026-10-24；审计跟进：2026-11-03
+> 测试日期：2026-10-24；审计跟进：2026-11-03；API 接入复测：2026-11-04
 >
-> 范围：豆奶输入层全部代码、接口、隐私流程、provider 降级、插件/模型安装与 Web 控制台
+> 范围：豆奶输入层全部代码、接口、隐私流程、API 连接（Base URL + Key）、provider 降级、插件/模型安装与 Web 控制台
 >
 > 原则：从根因查起，区分设计缺陷与实现缺陷；记录影响面、修复副作用与未能消除的残余风险。
 
 ## 1. 结论摘要
 
-- **自动化测试：123 passed，0 failed**。
-- **总覆盖率：80%**（语句/分支综合；`store` 94%、`api` 91%、`events`/`errors` 100%、`manager` 约 90%）。
-- **Lint/格式**：`ruff check` 与 `ruff format --check` 全部通过。
-- **依赖安全**：`pip-audit` 报告 **No known vulnerabilities found**。
-- **静态安全扫描**：Bandit 未发现未处置问题；仅在 `pyproject.toml` 中跳过 B105（把环境变量**名称**误判为硬编码密码）。
-- **构建**：sdist 与 wheel 构建成功；wheel 包含 Web/政策资源，不含 tests、data、.env、docs 或模型权重。
-- **独立安装**：在全新 venv 安装 wheel，`dounai-input doctor` 可运行。
+- **自动化测试：164 passed，0 failed**（`pytest -q`，约 45 s；带覆盖率约 65 s）。
+- **总覆盖率：79%**（语句/分支综合；`store` 95%、`api` 93%、`secrets` 87%、`api_access` 79%、`api_connections` 79%、`events`/`errors` 100%）。
+- **Lint/格式**：`ruff check src tests examples` 与 `ruff format --check src tests examples` 全部通过（46 个文件）。
+- **依赖安全**：`uvx pip-audit` 报告 **No known vulnerabilities found**（`cryptography>=50,<51`，dev 额外依赖 `pytest 9.0.3+`）。
+- **静态安全扫描**：`uvx bandit -c pyproject.toml -q -r src` 无输出；仅在 `pyproject.toml` 中跳过 B105（把环境变量**名称**误判为硬编码密码）。
+- **构建**：`python -m build` 成功生成 0.2.0 的 sdist 与 wheel；wheel 共 38 个文件，包含 `api_access.py`/`api_connections.py`/`secrets.py` 与 Web 资源，不含 tests、data、docs 或模型权重。
+- **独立安装**：在全新 venv 安装 0.2.0 wheel，`dounai-input doctor` 可运行，`/healthz` 返回 `version=0.2.0`、schema v3（见 5.7）。
 - **真实本地模型**：下载并校验 `faster-whisper` tiny/small；在 Windows SAPI 合成中文语音上完成“语音 → 本地 ASR → 事件 → 声纹唤醒”的端到端验证。
-- **浏览器 E2E**：Edge + Playwright 实际发送文字，校验事件 JSON、无横向溢出；截图生成。
-- **未执行**：Docker 容器运行（本机无 Docker）、GPU 推理、真实第三方 API 调用（无 BYOK 密钥）、多租户/高并发压测。它们属于残余风险，不伪装为已测。
+- **API 接入**：新增“用户填 Base URL + API Key → 发现模型 → 逐项实测能力 → 保存为动态 provider”的完整链路，已用本地 mock 厂商做 HTTP 与浏览器两层实测；**未调用真实第三方厂商**（无计费密钥，也不应把测试音频发出去）。
+- **浏览器 E2E**：Edge + Playwright 走通「添加 API 连接 → 发现 3 个模型 → 探测 → 保存 → 切换 → 刷新后保持 → 移除模型回退 offline → 删除连接」，无 JS 错误、无横向溢出、页面中检索不到测试 Key。
+- **未执行**：Docker 容器运行（本机无 Docker）、GPU 推理、真实第三方 API 调用、多租户/高并发压测。它们属于残余风险，不伪装为已测。
 
 最终端到端实测（推荐 `small` 本地模型、默认唤醒词）：
 
@@ -44,19 +45,21 @@
 | OS | Windows 11 10.0.26200 |
 | CPU | AMD Ryzen Threadripper 2990WX（测试机，性能不代表部署基线） |
 | Python | 3.12.13 |
-| 关键依赖 | FastAPI 0.162.0 / Pydantic 2.14.1 / NumPy 2.5.4 / httpx 0.28.1 |
-| 可选依赖 | faster-whisper 1.2.1 / PyAV 18.1.0 / huggingface-hub 1.33.0 |
+| 关键依赖 | FastAPI 0.162.0 / Pydantic 2.14.1 / NumPy 2.5.4 / httpx 0.28.1 / cryptography 50.0.2 |
+| 可选依赖 | faster-whisper 1.2.1 / PyAV 18.1.0 / huggingface-hub 1.33.0；`keyring` 未安装（`auto` 回退文件后端） |
 | 浏览器 | Microsoft Edge headless + Playwright Core |
+| 模拟厂商 | 本机临时 `127.0.0.1:9100`，实现 `/v1/models`、`/v1/chat/completions`、`/v1/audio/transcriptions`（只存在于测试机，未提交） |
 
 测试层次：
 
 1. **契约测试**：字段集合、额外字段拒绝、时间/UUID、能力排序、schema 与代码一致性。
 2. **API 集成**：文字/图像/语音、媒体读取、错误码、鉴权、Origin、大小限制。
-3. **单元测试**：配置、魔数、声纹特征、provider 协议、存储、模型目录。
-4. **故障注入**：供应商异常/超时/畸形响应/全失败/熔断/隐私守卫/非 JSON。
-5. **隐私生命周期**：授权、撤回、删除、导出、保留期、模板不出设备。
-6. **插件/模型**：目录插件、entry point、冲突、禁用、安装失败、校验、卸载。
-7. **真实路径**：本地模型下载/加载/推理、SAPI 合成语音、浏览器 E2E。
+3. **API 连接**：密钥加密与钥匙串、URL/SSRF 策略、模型发现、能力探测、连接增删改查、动态 provider 注册/回退。
+4. **单元测试**：配置、魔数、声纹特征、provider 协议、存储、模型目录。
+5. **故障注入**：供应商异常/超时/畸形响应/全失败/熔断/隐私守卫/非 JSON/密钥不可解密。
+6. **隐私生命周期**：授权、撤回、删除、导出、保留期、模板不出设备。
+7. **插件/模型**：目录插件、entry point、冲突、禁用、安装失败、校验、卸载。
+8. **真实路径**：本地模型下载/加载/推理、SAPI 合成语音、本地 mock 厂商、浏览器 E2E。
 
 所有测试媒体均在 `tmp_path` 运行时生成。仓库不提交音频、图片、日志或测试数据库。
 
@@ -66,15 +69,17 @@
 | --- | ---: | --- | --- |
 | 事件契约 `test_contract.py` | 8 | 精确字段、asr_status、v1.0 兼容解析、UTC、能力去重、schema 一致 | 通过 |
 | 输入 API `test_api_inputs.py` | 16 | 三模态、媒体 URL、事件读回 session、base64 交付、自动 UUID、415/413/422 | 通过 |
+| API 连接 `test_api_connections.py` | 46 | AES-GCM/钥匙串/轮换、URL 与 SSRF、发现、三模态探测、协议歧义、连接 CRUD、动态 provider、删除回退、明文零泄漏 | 通过 |
 | 鉴权/安全 `test_auth.py` | 9 | Bearer、Token 不回显、能力 URL、base64 需鉴权、CSRF、超大 Content-Length | 通过 |
 | 配置 `test_config.py` | 12 | 默认安全值、非回环拒绝、TOML/env/BOM、public_base_url 告警 | 通过 |
-| Provider `test_providers.py` | 15 | 能力、可用性、两种 OpenAI 协议、错误脱敏、畸形 JSON、本地模型 | 通过 |
+| Provider `test_providers.py` | 10 | 能力、可用性、`audio_transcriptions`/`chat_audio` 两种协议、错误脱敏、畸形 JSON、本地模型 | 通过 |
 | 降级 `test_fallback.py` | 12 | 异常/超时/全失败/能力/隐私守卫/熔断/上下文/空转写/响应头 | 通过 |
 | 声纹 `test_voiceprint.py` | 13 | 正负样本、静音、授权、开关、样本不落盘、API 唤醒 | 通过 |
 | 隐私 `test_privacy.py` | 12 | 政策、导出 ZIP、撤回、删除、保留期、旧库迁移、权限 | 通过 |
 | 插件/模型 `test_plugins.py` | 12 | entry point、目录插件、禁用、冲突、安装失败、校验/卸载 | 通过 |
 | UI `test_ui.py` | 5 | CSP、静态资源、DOM ID、Node 语法、政策打包 | 通过 |
 | CLI `test_cli.py` | 9 | 列表、状态、授权、导出/删除、doctor、错误处理 | 通过 |
+| **合计** | **164** | | **全部通过** |
 
 ## 4. 故障注入结果
 
@@ -89,7 +94,7 @@
 | F7 | 连续两次失败（冷却期内） | 跳过熔断 provider | 第二次 active 为 skipped，直接 fallback | `test_circuit_breaker_skips_recently_failed_provider` |
 | F8 | 厂商 200 但 JSON 缺字段 | ProviderError，安全降级 | 不泄漏 body，fallback/空转写 | `test_malformed_vendor_response_is_a_provider_error` |
 | F9 | 厂商返回 HTML | ProviderError | 报「non-JSON」，不解析、不崩溃 | `test_non_json_vendor_response_is_a_provider_error` |
-| F10 | 厂商 401 body 含密钥字符串 | 错误不含 body/密钥 | 只提示检查环境变量名 | `test_provider_error_does_not_echo_response_body` |
+| F10 | 厂商 401 body 含密钥字符串 | 错误不含 body/密钥 | 只提示检查该连接的 API Key | `test_provider_error_does_not_echo_response_body` |
 | F11 | 声纹关闭 / 未授权 / 模板缺失 | `none`，不阻断音频 | 均返回 none；事件成功 | `test_disabled_voiceprint_does_not_detect` 等 |
 | F12 | 声纹开启但样本静音 | 422，不保存模板 | 质量错误，模板为空 | `test_silence_is_rejected_as_a_sample` |
 | F13 | 保留期到期，但媒体 `created_at` 未过期 | 媒体跟随事件删除 | 事件与文件均删除 | `test_retention_purges_expired_events_and_media` |
@@ -102,9 +107,15 @@
 | F20 | 未安装的 active provider 重启 | 退回 offline，不崩溃 | 初始化逻辑选择 offline | 代码审查 + CLI/doctor 实测 |
 | F21 | 无可用 ASR（默认 offline） | 显式标记不可用 | `asr_status=unavailable`、degraded=true、201 | `test_audio_without_model_still_creates_event` |
 | F22 | ASR 成功但静音/空文本 | 标记 empty，不算故障 | `asr_status=empty`、degraded=false | `test_successful_provider_with_empty_text_is_empty_not_unavailable`、`test_api_marks_empty_transcript_separately_from_unavailable` |
-| F23 | 旧 v1 数据库缺少 `asr_status` | 启动迁移且旧行可读 | 自动补列/回填，schema_version=2 | `test_legacy_v1_database_is_migrated` |
+| F23 | 旧 v1 数据库缺少 `asr_status` | 启动迁移且旧行可读 | 自动补列/回填，`schema_meta.schema_version=3` | `test_legacy_v1_database_is_migrated` |
 | F24 | 跨机消费方取不到媒体 URL | 鉴权 base64 可取字节 | 元数据/字节接口正确；无 Token 401 | `test_media_base64_and_event_media_endpoints`、`test_media_base64_requires_token` |
 | F25 | `public_base_url` 与监听地址错配 | 明确告警 | 启动日志/healthz/doctor 告警 | `test_public_base_url_warnings` |
+| F26 | 连接密钥无法解密（换机、换主密钥、库被拷贝） | 不崩溃，禁用该 provider 并回退 | 启动同步跳过该模型并 fallback | `test_provider_sync_survives_undecryptable_key` |
+| F27 | Base URL 指向云元数据 / 私网 / DNS 解析到私网 | 拒绝保存与探测 | 422；元数据地址永远拒绝，私网需显式开关 | `test_ssrf_rejected_over_api`、`test_dns_rebinding_to_private_metadata_is_rejected`、`test_private_endpoint_requires_explicit_permission` |
+| F28 | 探测途中厂商返回 401 | 立即停止，不继续消耗配额 | 只返回认证失败，后续能力保持 `not_tested` | `test_probe_stops_after_auth_failure` |
+| F29 | `/models` 返回非 JSON 或超大响应 | 明确错误，不回显 body | `api_discovery_failed`，不挂起 | `test_discover_models_non_json_and_oversize` |
+| F30 | 删除正在使用的连接 | 回退 offline，不留悬挂 provider | `active_provider` 变为 `offline` | `test_delete_connection_unregisters_and_falls_back` |
+| F31 | 连接的 Key 出现在响应/导出/数据库 | 任何路径都不出现 | 响应与导出 ZIP 无 Key，DB 只存密文 | `test_connection_api_never_returns_key`、`test_connection_patch_rotates_key_without_echo`、5.6 实测 |
 
 ## 5. 端到端验证
 
@@ -155,18 +166,55 @@ dounai-input models install small
 - 3 段录入的原始样本没有出现于 `media` 表；
 - 导出包含 80 维模板，删除/撤回后归零。
 
-### 5.4 浏览器
+### 5.4 浏览器（文字与语音缺口）
 
-Edge headless（1440×1200）实际执行：
+Edge headless（1440×1200）在默认 `offline` 配置下实际执行：
 
 1. 加载控制台，等待 provider 列表；
-2. 输入中文并点击「送入输入层」；
-3. 等待事件面板出现；
-4. 解析 JSON，校验 `modality`、`content`、`voiceprint_event`；
-5. 检查无横向溢出；
-6. 截图。
+2. 输入中文并点击「送入输入层」，事件面板出现；
+3. 解析 JSON：5 个顶层字段，`asr_status="not_applicable"`，会话标识为 UUID；
+4. 切到语音页上传 WAV：`asr_status="unavailable"`，界面显示「转写不可用」；
+5. 检查无横向溢出、无 JS 控制台错误。
 
-结果：成功。首次截图发现 favicon 404，已修复并复测（控制台无资源错误）。
+结果：通过（浏览器时间 2026-11-04，`errors=[]`、`overflow=false`）。
+
+### 5.5 浏览器（API 接入全流程）
+
+同一 Edge + Playwright，网关 `127.0.0.1:8767`，厂商换成本机 mock（`127.0.0.1:9100`，实现 `/v1/models`、`/v1/chat/completions`、`/v1/audio/transcriptions`）。实际执行：
+
+1. 打开「添加连接」，预设选“自定义”，勾选允许 HTTP 与私网，填 `http://127.0.0.1:9100/v1` 与测试 Key；
+2. 「发现模型」返回 3 个模型；勾选 `qwen3-asr-flash` 后「测试所选」，文本/图像/语音三个探测格全部从 `not_tested` 变为 `supported`；
+3. 保存：连接卡片出现，并显示「使用中」与模型标签；
+4. 点模型标签上的「切换」：弹出确认框（“语音会被发送到该第三方厂商，声纹模板始终留在本机”），接受后 `#providerSelect` 变为 `api-1c5eb524-qwen3-asr-flash`；
+5. 刷新页面：连接、模型标签与当前 provider 均保留；
+6. 「移除模型」：当前 provider 自动回退 `offline`，卡片显示「没有已保存的模型」；
+7. 「删除」连接：二次确认后列表回到「尚未添加 API 连接」，`GET /v1/api-connections` 返回 0 条；
+8. 全程 `pageerror`/console error 均为空，无横向溢出，页面文本中检索不到测试 Key。
+
+结果：通过（`discovered=3`、`activeAfterReload` 与切换值一致、`remaining=0`）。
+
+> 截图 `docs/assets/console-demo.png` 用的是展示用种子数据（真实 DashScope 地址 + 占位 Key），不是上面 mock 流程的截图；两者都只验证界面，不产生真实厂商调用。
+
+### 5.6 API 接入 HTTP 实测
+
+不经浏览器，直接用 `urllib` 走接口，厂商仍是本地 mock（避免真实计费与外发）：
+
+| 步骤 | 实测结果 |
+| --- | --- |
+| `GET /v1/api-presets` | 200，5 个预设：DashScope、OpenAI、OpenRouter、SiliconFlow、Ollama |
+| `POST /v1/api-connections/discover` | 200，返回 3 个模型 id |
+| `POST /v1/api-connections/probe` | 200，`capabilities=[text,image,audio]`，`transcription_protocol=audio_transcriptions` |
+| `POST /v1/api-connections` | 201，返回不可逆 `key_fingerprint`，不含 Key 明文；`capabilities` 可省略，服务端按探测结果推导 |
+| `PUT /v1/providers/active` | 200，激活 `api-addebbd5-qwen3-asr-flash` |
+| `POST /v1/inputs/audio` | 201，`asr_text="你好"`、`asr_status="completed"`、`X-Dounai-Provider=api-…`、`X-Dounai-Model=qwen3-asr-flash`、`degraded=false` |
+| `GET /v1/api-connections` | 响应中检索不到测试 Key |
+| `GET /v1/privacy/export` | ZIP 中检索不到测试 Key |
+| SQLite | `schema_meta.schema_version=3`；`key_ciphertext` 为密文；`api_connections`/`api_models` 全表无明文 |
+| `DELETE /v1/api-connections/{id}` | 200，`active_provider` 回到 `offline`，`/healthz` 同步 |
+
+### 5.7 独立安装
+
+在全新 venv（Python 3.12）安装 0.2.0 wheel，运行 `dounai-input doctor` 可正常输出环境检查；`/healthz` 返回 `version=0.2.0`、`contract_version=1.1`，数据库 `schema_meta.schema_version=3`。wheel 含 Web 资源与新模块，未包含 tests/data/docs。
 
 ## 6. 根因分析（重点）
 
@@ -404,6 +452,18 @@ Edge headless（1440×1200）实际执行：
 
 **验证**：`test_image_upload_and_media_access`（读回头）、`test_media_base64_and_event_media_endpoints`、`test_media_base64_requires_token`、`test_generated_session_id_is_uuid`、`test_public_base_url_warnings`。
 
+### RC-17 API 连接的能力声明由调用方提交，可被绕过（设计取舍，接受为残余风险）
+
+**现象**：直接调用 `POST /v1/api-connections` 时，模型能力来自请求体里的 `probes` 状态。把 `audio` 写成 `supported` 就能生成一个“支持语音”的 provider，而服务端并没有真正探测过这个模型。
+
+**根因**：控制台流程是“前端先探测 → 再保存”，服务端为了不重复探测、也不在保存时再次把私网凭据发到网络，选择复用调用方的探测结果。请求体里的 `capabilities` 已改为可选并被忽略，能力只按 `probes` 推导；但 `probes` 本身仍由调用方填写，服务端只校验枚举值、“audio 必须带协议”“没有 supported 就不能保存”等一致性规则，不校验探测是否真的发生过。这是**完整性设计缺口**：把“能力由实测决定”的承诺部分交给了客户端。
+
+**影响**：能直连本机 API 的调用者可以伪造自己网关的能力声明；后果是该 provider 在真实转写时失败并降级/空转写，或把语音发到一个实际不支持音频的端点。它只影响调用者自己的配置，默认又只监听回环并带同源写保护，所以接受为残余风险。
+
+**未修复**：若要强保证，应在 create/update 时由服务端重新探测（每次保存多 3 个请求，并需要把密钥留在服务端上下文中）。当前不做。
+
+**验证**：`test_connection_requires_probed_capabilities` 只保证“没有 supported 探测就不能声明能力”，不保证探测本身真实；浏览器与 5.6 的 E2E 走的是服务端探测路径。
+
 ## 7. 设计缺陷 vs 实现缺陷
 
 | 编号 | 类型 | 是否影响安全/隐私 | 影响面 | 修复副作用 |
@@ -422,10 +482,11 @@ Edge headless（1440×1200）实际执行：
 | RC-12 | 实现 | 低（可观测） | 降级标记 | 冷却期总标记降级 |
 | RC-13 | 实现 | 低（诊断） | 声纹质量字段 | 无 |
 | RC-14 | 设计（安全校验） | 高 | 非回环绑定保护 | 自定义回环域名需 Token |
-
-> 审计跟进（2026-11-03）：I-01/I-02/I-03 已修复，见新增的 RC-15/RC-16 及第 6.x 节。
 | RC-15 | 设计（ASR 语义） | 中 | 所有语音事件/下游 | 旧消费方需读新字段 |
 | RC-16 | 设计（跨层接口） | 中 | 会话/媒体交付 | 下游需读响应头/走 base64 |
+| RC-17 | 设计（完整性） | 低（仅本机调用者） | API 连接能力声明 | 控制台仍走服务端探测 |
+
+> 审计跟进：2026-11-03 修复 I-01/I-02/I-03（RC-15/RC-16）；2026-11-04 的 API 接入改造引入 RC-17，作为可接受的残余风险列在第 9 节。
 
 ## 8. 为什么不是表面修复
 
@@ -437,13 +498,21 @@ Edge headless（1440×1200）实际执行：
 - 事件契约只增加一个**可选**且语义明确的 `asr_status`，没把 session/来源等诊断塞进事件；旧消费方仍能解析。
 - 跨机媒体不是把 base64 硬塞进事件，而是新增独立鉴权接口，保持事件体积与引用语义。
 - 旧数据库不是要求用户重装，而是启动时幂等迁移并回填可推断状态。
+- API 接入没有把厂商再写死成一份 profile，而是把 URL、Key、模型和能力变成运行期数据；`dashscope`/`openai` 静态 provider 与对应环境变量已移除。
+- API Key 没有塞进 `dounai.toml` 或环境变量，而是 AES-GCM 加密入库、主密钥留在本机（文件或系统钥匙串），接口、导出与日志都不回显。
+- 模型能力没有按名字猜（比如“带 asr 字样就支持音频”），而是发最小合成请求逐项实测；探测失败就标 `unsupported`，不把猜测写进能力列表。
+- 保存连接时 `capabilities` 改为可选并被忽略，服务端只按探测状态推导能力，避免“声明即能力”。
 
 ## 9. 残余风险与未测项
 
 | 风险 | 状态 | 建议 |
 | --- | --- | --- |
 | Docker 容器运行 | **未执行**（本机无 Docker） | 在目标平台执行 `docker build`、健康检查、卷权限测试；CI 当前只构建 Python 包 |
-| 真实第三方 API | **未执行**（无 BYOK 密钥） | 用真实 Qwen/OpenAI key 做一次音频抽样；确认地域/Workspace 域名 |
+| 真实第三方厂商 | **未执行**（无计费密钥，也不应把测试音频发出去） | 用真实 Qwen/OpenAI/OpenRouter Key 各跑一次发现、探测与音频；确认地域域名、限流与计费 |
+| API 探测结果可被调用方伪造 | 设计取舍（RC-17） | 单用户本机可接受；若做多用户/托管，必须在服务端复探 |
+| DNS rebinding（校验与连接两次解析） | 未消除 | 校验时解析一次、httpx 连接时再解析，存在 TOCTOU 窗口；高安全场景固定 IP 或走受控出口 |
+| 系统钥匙串后端 | 仅 fake backend 单测，未在真实 OS 凭据库验证 | 在 Windows Credential Manager / macOS Keychain / Linux Secret Service 各跑一次；不可用时回退文件 |
+| 主密钥文件保护 | 依赖 0600 权限与磁盘 | Windows ACL 继承、多用户主机需磁盘加密；能拷走整个数据目录即可解密 |
 | GPU 推理 | 未执行 | 在 CUDA 环境验证 `device=cuda` 与 `compute_type` |
 | 长音频/大并发 | 未压测 | 单实例同步 ASR；高并发需队列/限流 |
 | 分块传输绕过 Content-Length | 未完全防护 | 反向代理设置 body 上限；后续可加 ASGI 流式限流 |
@@ -453,6 +522,12 @@ Edge headless（1440×1200）实际执行：
 | 文本内容安全 | 未处理 | 下游做注入/合规过滤；本层不篡改用户原文 |
 | 浏览器录音兼容性 | Edge/Chromium 已验证 | Safari/Firefox 的 MediaRecorder 差异需实测 |
 | 部分依赖为未来版本 | 固定上界 | 定期跑 CI 与 `pip-audit`，尤其是 PyAV |
+
+### 9.1 本轮遗留项
+
+| 项 | 现象 | 处理建议 |
+| --- | --- | --- |
+| 仓库根目录 `manifest.json` | 未跟踪文件，是宿主应用注册清单（版本 0.1.0），不属于本包 | 确认是否加入 `.gitignore`，不要随发布提交 |
 
 ## 10. 复现命令
 
@@ -483,22 +558,33 @@ dounai-input models install small
 # 启动并发送 WAV：
 dounai-input serve --port 8766
 curl -F "file=@voice.wav;type=audio/wav" http://127.0.0.1:8766/v1/inputs/audio
+
+# API 连接：发现 → 探测 → 保存 → 激活
+curl -s http://127.0.0.1:8766/v1/api-presets
+curl -s -X POST http://127.0.0.1:8766/v1/api-connections/discover \
+  -H 'Content-Type: application/json' \
+  -d '{"base_url":"https://dashscope.aliyuncs.com/compatible-mode/v1","api_key":"sk-...","allow_private":false,"allow_http":false}'
+curl -s -X POST http://127.0.0.1:8766/v1/api-connections/probe \
+  -H 'Content-Type: application/json' \
+  -d '{"base_url":"https://dashscope.aliyuncs.com/compatible-mode/v1","api_key":"sk-...","model_id":"qwen3-asr-flash","allow_private":false,"allow_http":false}'
+# 把 probe 返回的 probes/transcription_protocol 放进 models（capabilities 可省略），再 POST /v1/api-connections
 ```
 
-浏览器 E2E 的 Playwright 脚本仅在测试机临时目录运行，没有作为依赖或测试数据提交；控制台截图保存在 `docs/assets/console-demo.png`。
+浏览器 E2E 与本地 mock 厂商都是测试机临时目录里的脚本，没有作为依赖或测试数据提交；控制台截图保存在 `docs/assets/console-demo.png`。
 
-本次审计跟进的浏览器实测（Edge headless）：
+本轮（2026-11-04）浏览器实测：
 
 - 文字事件 `asr_status="not_applicable"`，会话标识为 UUID；
-- 未配置 ASR 时上传 WAV：事件 `asr_status="unavailable"`、界面显示"转写不可用"提示；
-- 无 JS 控制台错误、无横向溢出；
+- 未配置 ASR 时上传 WAV：事件 `asr_status="unavailable"`、界面显示「转写不可用」；
+- API 接入：发现 3 个模型、逐项探测、保存、切换、刷新保持、移除回退、删除连接全部通过，无 JS 错误、无横向溢出、页面无 Key；
 - 媒体 base64 接口、事件媒体接口、契约 v1.1 断言均通过；
-- 全新 venv 安装 wheel 后 smoke 通过。
+- 全新 venv 安装 0.2.0 wheel 后 `doctor` 与 `/healthz`（version 0.2.0、schema v3）通过。
 
 ## 11. 仓库清洁声明
 
 - 测试使用的音频、图片、数据库、模型权重、日志均在临时目录或 `data/`（已忽略），**不提交**。
 - 仓库不含 `.env`、真实 API Key、用户数据、`__pycache__`、测试日志或临时脚本。
+- mock 厂商、Playwright 脚本与构建产物只存在于测试机临时目录；仓库根目录的 `manifest.json` 是宿主应用清单，未跟踪（见 9.1）。
 - `tests/helpers.py` 的 `StubProvider` 仅供测试导入，不在运行时加载，也没有被注册为内置 provider。
 - Docker 构建上下文通过 `.dockerignore` 排除 tests/docs/data/models。
 - 模型下载只通过显式 CLI 安装，仓库不含权重大文件。

@@ -18,7 +18,8 @@ def test_safe_defaults(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     assert settings.api_token is None
     assert settings.voiceprint_enabled is False
     assert settings.allow_remote_fallback is False
-    assert settings.provider_config("dashscope")["asr_model"] == "qwen3-asr-flash"
+    assert settings.provider_config("local-whisper")["model"] == "small"
+    assert "dashscope" not in settings.provider_configs
 
 
 def test_non_loopback_bind_requires_token(tmp_path: Path) -> None:
@@ -52,8 +53,8 @@ wake_phrase = "小豆"
 [models]
 active = "offline"
 fallback = ["local-whisper"]
-[providers.dashscope]
-asr_model = "my-asr"
+[providers.local-whisper]
+model = "base"
 """,
         encoding="utf-8",
     )
@@ -63,7 +64,7 @@ asr_model = "my-asr"
     assert settings.voiceprint_enabled is True
     assert settings.wake_phrase == "小豆"
     assert settings.fallback_providers == ("local-whisper",)
-    assert settings.provider_config("dashscope")["asr_model"] == "my-asr"
+    assert settings.provider_config("local-whisper")["model"] == "base"
 
 
 def test_environment_overrides_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

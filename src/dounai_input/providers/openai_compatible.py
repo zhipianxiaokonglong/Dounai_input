@@ -1,13 +1,15 @@
-"""Adapters for OpenAI-compatible speech APIs.
+"""Generic OpenAI-compatible API provider.
 
-Two protocols are supported because "OpenAI compatible" is not one protocol:
+The adapter is intentionally *not* bound to vendor profiles or environment
+variables: a connection supplies ``base_url``, ``model`` and an explicit API key
+from the encrypted local store.  Two audio shapes are supported because
+"OpenAI compatible" is not one protocol:
 
-* ``audio_transcriptions``: multipart ``/audio/transcriptions`` (OpenAI).
-* ``chat_audio``: one base64 audio message to ``/chat/completions``
-  (Alibaba Cloud Model Studio's Qwen3-ASR-Flash uses this shape).
+* ``audio_transcriptions``: multipart ``/audio/transcriptions`` (OpenAI, Azure,
+  many gateways);
+* ``chat_audio``: base64 audio in ``/chat/completions`` (Qwen3-ASR, some gateways).
 
-The vendor difference stays inside this adapter; callers see only
-``TranscriptionResult``.
+Callers only see ``TranscriptionResult``.
 """
 
 from __future__ import annotations
@@ -15,11 +17,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import logging
-import os
-from collections.abc import Mapping
-from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
 
 import httpx
 
@@ -33,92 +31,63 @@ from .base import (
 
 logger = logging.getLogger(__name__)
 
-_PROFILES: dict[str, dict[str, Any]] = {
-    "dashscope": {
-        "name": "通义千问 Qwen3-ASR（阿里云百炼）",
-        "description": (
-            "推荐第三方方案。Qwen3-ASR-Flash 对中文、方言与中英混说表现稳定；"
-            "同一账号还可使用 Qwen3.8-Omni-Flash 做后续全模态理解。BYOK，音频会发送到厂商。"
-        ),
-        "capabilities": ("text", "image", "audio"),
-        "protocol": "chat_audio",
-        "default_api_key_env": "DASHSCOPE_API_KEY",
-        "default_base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
-        "default_model": "qwen3-asr-flash",
-        "homepage": "https://bailian.console.aliyun.com/",
-    },
-    "openai": {
-        "name": "OpenAI Speech-to-Text",
-        "description": (
-            "OpenAI 官方转写接口，多语言覆盖好。BYOK，音频会发送到 OpenAI；"
-            "需要可访问 OpenAI API 的网络环境。"
-        ),
-        "capabilities": ("text", "image", "audio"),
-        "protocol": "audio_transcriptions",
-        "default_api_key_env": "OPENAI_API_KEY",
-        "default_base_url": "https://api.openai.com/v1",
-        "default_model": "gpt-4o-transcribe",
-        "homepage": "https://platform.openai.com/api-keys",
-    },
-}
+TRANSCRIPTION_PROTOCOLS = {"audio_transcriptions", "chat_audio"}
 
 
 class OpenAICompatibleProvider(BaseProvider):
     def __init__(
         self,
-        config: Mapping[str, Any] | None = None,
         *,
         provider_id: str,
-        name: str | None = None,
-        description: str | None = None,
+        name: str,
+        base_url: str,
+        model: str,
+        api_key: str,
         protocol: str = "audio_transcriptions",
-        default_api_key_env: str,
-        default_base_url: str,
-        default_model: str,
-        capabilities: tuple[str, ...] = ("text", "image", "audio"),
+        capabilities: tuple[str, ...] = ("text", "audio"),
+        description: str = "",
+        timeout_seconds: float = 60.0,
+        language: str = "zh",
         homepage: str | None = None,
     ) -> None:
-        super().__init__(config)
+        super().__init__({})
+        if protocol not in TRANSCRIPTION_PROTOCOLS:
+            raise ValueError(f"Unsupported OpenAI-compatible protocol: {protocol!r}")
+        self._api_key = api_key
+        self.base_url = base_url.rstrip("/")
+        self.asr_model = model
+        self.protocol = protocol
+        self.language = language
+        self.timeout_seconds = float(timeout_seconds)
         self.manifest = ProviderManifest(
             id=provider_id,
-            name=name or provider_id,
+            name=name,
             version="1.0.0",
-            description=description or "",
+            description=description,
             capabilities=capabilities,
             privacy="remote",
             requires_api_key=True,
-            can_transcribe=True,
+            can_transcribe=("audio" in capabilities),
             homepage=homepage,
         )
-        self.base_url = str(self.config.get("base_url") or default_base_url).rstrip("/")
-        self.api_key_env = str(self.config.get("api_key_env") or default_api_key_env)
-        self.asr_model = str(self.config.get("asr_model") or default_model)
-        self.omni_model = self.config.get("omni_model")
-        self.protocol = str(self.config.get("protocol") or protocol)
-        self.language = self.config.get("language") or "zh"
-        self.timeout_seconds = float(self.config.get("timeout_seconds", 60))
-        self._protocol = self.protocol
-        if self._protocol not in {"audio_transcriptions", "chat_audio"}:
-            raise ValueError(f"Unsupported OpenAI-compatible protocol: {self._protocol}")
-
-    def api_key(self) -> str | None:
-        value = os.getenv(self.api_key_env, "").strip()
-        return value or None
 
     def availability(self) -> tuple[bool, str | None]:
-        if not self.api_key():
-            return False, f"Set {self.api_key_env} to use this provider."
-        parsed = urlparse(self.base_url)
-        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        if not self._api_key.strip():
+            return False, "API key is missing for this connection."
+        parsed = httpx.URL(self.base_url)
+        if parsed.scheme not in {"http", "https"} or not parsed.host:
             return False, "base_url must be an absolute http(s) URL."
         if not self.asr_model:
-            return False, "asr_model is not configured."
+            return False, "model id is not configured."
+        if "audio" not in self.manifest.capabilities:
+            return False, "this model was not verified for audio input."
         return True, None
 
     def info(self) -> dict[str, Any]:
         info = super().info()
         info["model"] = self.asr_model
         info["base_url"] = self.base_url
+        info["transcription_protocol"] = self.protocol
         return info
 
     async def transcribe(self, request: TranscriptionRequest) -> TranscriptionResult:
@@ -129,19 +98,12 @@ class OpenAICompatibleProvider(BaseProvider):
                 provider_id=self.manifest.id,
                 retryable=False,
             )
-        api_key = self.api_key()
-        if api_key is None:
-            raise ProviderError(
-                f"Set {self.api_key_env} to use this provider.",
-                provider_id=self.manifest.id,
-                retryable=False,
-            )
         timeout = min(request.timeout_seconds, self.timeout_seconds)
         try:
-            if self._protocol == "audio_transcriptions":
-                text = await self._transcribe_multipart(request, api_key, timeout)
+            if self.protocol == "audio_transcriptions":
+                text = await self._transcribe_multipart(request, timeout)
             else:
-                text = await self._transcribe_chat_audio(request, api_key, timeout)
+                text = await self._transcribe_chat_audio(request, timeout)
         except ProviderError:
             raise
         except httpx.TimeoutException as exc:
@@ -164,9 +126,7 @@ class OpenAICompatibleProvider(BaseProvider):
             language=request.language or self.language,
         )
 
-    async def _transcribe_multipart(
-        self, request: TranscriptionRequest, api_key: str, timeout: float
-    ) -> str:
+    async def _transcribe_multipart(self, request: TranscriptionRequest, timeout: float) -> str:
         audio = await asyncio.to_thread(request.path.read_bytes)
         data: dict[str, str] = {
             "model": self.asr_model,
@@ -182,7 +142,7 @@ class OpenAICompatibleProvider(BaseProvider):
         async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
             response = await client.post(
                 f"{self.base_url}/audio/transcriptions",
-                headers={"Authorization": f"Bearer {api_key}"},
+                headers={"Authorization": f"Bearer {self._api_key}"},
                 data=data,
                 files=files,
             )
@@ -196,9 +156,7 @@ class OpenAICompatibleProvider(BaseProvider):
             )
         return text.strip()
 
-    async def _transcribe_chat_audio(
-        self, request: TranscriptionRequest, api_key: str, timeout: float
-    ) -> str:
+    async def _transcribe_chat_audio(self, request: TranscriptionRequest, timeout: float) -> str:
         audio = await asyncio.to_thread(request.path.read_bytes)
         encoded = base64.b64encode(audio).decode("ascii")
         language = request.language or self.language
@@ -210,7 +168,10 @@ class OpenAICompatibleProvider(BaseProvider):
                     "content": [
                         {
                             "type": "input_audio",
-                            "input_audio": {"data": f"data:{request.mime};base64,{encoded}"},
+                            "input_audio": {
+                                "data": f"data:{request.mime};base64,{encoded}",
+                                "format": self._audio_format(request.mime),
+                            },
                         }
                     ],
                 }
@@ -225,7 +186,7 @@ class OpenAICompatibleProvider(BaseProvider):
             response = await client.post(
                 f"{self.base_url}/chat/completions",
                 headers={
-                    "Authorization": f"Bearer {api_key}",
+                    "Authorization": f"Bearer {self._api_key}",
                     "Content-Type": "application/json",
                 },
                 json=body,
@@ -255,12 +216,25 @@ class OpenAICompatibleProvider(BaseProvider):
             retryable=True,
         )
 
+    @staticmethod
+    def _audio_format(mime: str) -> str:
+        mapping = {
+            "audio/wav": "wav",
+            "audio/x-wav": "wav",
+            "audio/mpeg": "mp3",
+            "audio/mp4": "mp4",
+            "audio/flac": "flac",
+            "audio/ogg": "ogg",
+            "audio/webm": "webm",
+        }
+        return mapping.get(mime, "wav")
+
     def _json_or_error(self, response: httpx.Response) -> dict[str, Any]:
         status = response.status_code
         if status >= 400:
             retryable = status in {408, 409, 425, 429} or status >= 500
             if status in {401, 403}:
-                message = f"Authentication failed. Check {self.api_key_env}."
+                message = "Authentication failed. Check the connection API key."
             elif status == 404:
                 message = "Provider endpoint or model was not found. Check base_url and model."
             elif status == 429:
@@ -291,26 +265,3 @@ class OpenAICompatibleProvider(BaseProvider):
                 retryable=True,
             )
         return payload
-
-
-def build_provider(
-    provider_id: str,
-    config: Mapping[str, Any],
-    *,
-    models_dir: Path,
-) -> BaseProvider:
-    if provider_id not in _PROFILES:
-        raise ValueError(f"Unknown OpenAI-compatible profile: {provider_id}")
-    profile = _PROFILES[provider_id]
-    return OpenAICompatibleProvider(
-        config,
-        provider_id=provider_id,
-        name=str(profile["name"]),
-        description=str(profile["description"]),
-        protocol=str(profile["protocol"]),
-        default_api_key_env=str(profile["default_api_key_env"]),
-        default_base_url=str(profile["default_base_url"]),
-        default_model=str(profile["default_model"]),
-        capabilities=tuple(profile["capabilities"]),
-        homepage=profile.get("homepage"),
-    )

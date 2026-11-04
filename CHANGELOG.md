@@ -1,5 +1,42 @@
 # Changelog
 
+## [0.2.0] - 2026-11-04
+
+### Added
+
+- Web 控制台“API 厂商接入”：填 Base URL + API Key，发现模型、勾选、实测能力后保存；
+  一个连接可以保存多个模型，随时切换或移除
+- 预设阿里云百炼 / OpenAI / OpenRouter / SiliconFlow / 本机 Ollama，也可自定义 Base URL
+- 新增接口：`GET /v1/api-presets`、`POST /v1/api-connections/discover`、
+  `POST /v1/api-connections/probe`，以及连接的增删改查、重新发现、模型重新探测与移除
+- API Key 以 AES-256-GCM 加密入库；安装 `.[keyring]` 并设置
+  `DOUNAI_SECRET_BACKEND=keyring` 后可把主密钥放进系统钥匙串
+- 删除全部个人数据时一并清除连接、密文与主密钥
+
+### Changed
+
+- provider 接入从静态环境变量改为运行时 API 连接：移除 `[providers.dashscope]`、
+  `[providers.openai]` 与 `DASHSCOPE_API_KEY`、`OPENAI_API_KEY`
+- 一个连接可派生多个模型 provider；模型能力由服务端探测（文字 / 图像 / 语音与
+  转写协议），不再依赖厂商名硬编码
+- SQLite schema 升级为 v3，新增 `api_connections`、`api_models`，自动迁移旧库
+- 默认 fallback 只保留 `local-whisper`；动态 API provider 一律按 `remote` 处理
+- 内置 HTTP custom provider 保持不变；插件机制不受影响
+
+### Security
+
+- 厂商 URL 校验：默认仅 HTTPS，私网与 HTTP 需显式放行，云元数据地址永久拒绝，
+  校验 DNS 解析结果且不跟随重定向
+- 密钥只在服务端即时解密，不进入响应、日志或导出；界面只展示不可逆指纹
+- 连接对应的 provider 参与既有的远程降级守卫，`allow_remote_fallback=false` 时
+  本地失败不会把音频转给云端
+
+### Known limitations
+
+- 仅支持 OpenAI 兼容协议；Azure 原生、Anthropic 原生暂不接入
+- 直接调用保存接口时，能力结果是调用方提交的探测结论；控制台始终先调用服务端探测
+- 主密钥与数据库同机存放（除非启用 keyring），无法防御同一 OS 用户下的恶意进程
+
 ## [0.1.1] - 2026-11-03
 
 ### Changed (contract v1.1)

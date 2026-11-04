@@ -164,8 +164,23 @@
           </div>
           <a class="text-link" href="/docs" target="_blank" rel="noreferrer">接入指南</a>
         </div>
-        <p class="panel-copy">插件化适配层屏蔽厂商差异。云端模型使用你自己的 API Key（BYOK）；本地模型权重不随代码分发，按需安装。</p>
+        <p class="panel-copy">插件化适配层屏蔽厂商差异。云端模型使用你自己的 API Key（BYOK），填写 URL 和密钥后自动发现并测试模型；本地模型权重不随代码分发，按需安装。</p>
         <div class="provider-list" id="providerList"></div>
+
+        <div class="api-access">
+          <div class="api-access-head">
+            <div>
+              <strong>API 厂商接入</strong>
+              <p>输入 OpenAI 兼容的 Base URL 与 API Key，发现模型并实际测试文本/图像/语音能力。</p>
+            </div>
+            <button class="secondary-button" id="openApiDialogButton" type="button">+ 添加连接</button>
+          </div>
+          <div id="apiConnectionList" class="api-connection-list">
+            <p class="muted">尚未添加 API 连接。推荐先使用阿里云百炼 Qwen。</p>
+          </div>
+          <p class="api-security-note">密钥仅保存在本机加密存储，不会回显、不会进入导出包、不会写日志；安装 keyring 扩展后可改存系统钥匙串。探测会用合成图片/音频，可能产生极少量厂商调用费用。</p>
+        </div>
+
         <details class="local-models">
           <summary>本地免费语音模型 <span id="localModelCount"></span></summary>
           <div id="localModelList" class="local-model-list"><p class="muted">读取中…</p></div>
@@ -261,12 +276,84 @@
   <dialog id="deleteDialog" class="dialog">
     <p class="section-kicker">IRREVERSIBLE</p>
     <h2>删除全部个人数据？</h2>
-    <p>这会删除事件、媒体文件、声纹模板、授权记录与隐私操作记录，且无法恢复。本地模型与配置不受影响。</p>
+    <p>这会删除事件、媒体文件、声纹模板、API 连接与密钥、授权记录与隐私操作记录，且无法恢复。本地模型文件不受影响。</p>
     <label for="deleteConfirmInput">输入“删除”以确认</label>
     <input id="deleteConfirmInput" type="text" autocomplete="off" placeholder="删除">
     <div class="dialog-actions">
       <button class="ghost-button" id="cancelDeleteButton" type="button">取消</button>
       <button class="danger-button" id="confirmDeleteButton" type="button" disabled>永久删除</button>
+    </div>
+  </dialog>
+
+  <dialog id="apiDialog" class="dialog dialog-wide">
+    <div class="dialog-head">
+      <div><p class="section-kicker">API ACCESS</p><h2>接入厂商 API</h2></div>
+      <button class="icon-button" id="closeApiDialogButton" type="button" aria-label="关闭">×</button>
+    </div>
+    <p class="muted">URL 与 Key 只在本机使用；请只连接你信任的端点。</p>
+
+    <div class="api-form-grid">
+      <label class="field-label">预设
+        <select id="apiPresetSelect"></select>
+      </label>
+      <label class="field-label">连接名称
+        <input id="apiNameInput" type="text" maxlength="80" autocomplete="off" placeholder="例如：百炼 Qwen">
+      </label>
+    </div>
+    <label class="field-label">Base URL
+      <input id="apiBaseUrlInput" type="url" maxlength="512" autocomplete="off" placeholder="https://dashscope.aliyuncs.com/compatible-mode/v1">
+    </label>
+    <label class="field-label">API Key
+      <input id="apiKeyInput" type="password" maxlength="4096" autocomplete="new-password" placeholder="仅保存在本机加密存储">
+    </label>
+    <div class="permission-row">
+      <label class="check-line"><input type="checkbox" id="apiAllowPrivate"> 允许访问本机/内网地址（Ollama 等需要）</label>
+      <label class="check-line"><input type="checkbox" id="apiAllowHttp"> 允许明文 HTTP（仅限可信内网）</label>
+    </div>
+    <p class="api-dialog-note" id="apiPresetNote"></p>
+
+    <div class="button-row">
+      <button class="secondary-button" id="discoverModelsButton" type="button">发现模型</button>
+      <span class="hint" id="discoverHint"></span>
+    </div>
+    <div class="api-model-picker" id="apiModelPicker" hidden>
+      <div class="api-model-picker-head">
+        <strong>发现的模型</strong>
+        <label class="search-box"><input id="apiModelSearch" type="search" placeholder="搜索模型 ID…" autocomplete="off"></label>
+      </div>
+      <div id="apiModelList" class="api-model-list"></div>
+      <label class="check-line manual-model-line">
+        <input type="checkbox" id="apiManualModelToggle"> 模型列表没有目标模型，手动输入 ID
+      </label>
+      <div id="apiManualModelRow" class="manual-model-row" hidden>
+        <input id="apiManualModelInput" type="text" maxlength="200" autocomplete="off" placeholder="例如 qwen3-asr-flash">
+        <button class="ghost-button small" id="apiManualModelButton" type="button">选择该模型</button>
+      </div>
+    </div>
+
+    <div class="api-selected" id="apiSelected" hidden>
+      <div class="api-selected-head"><strong>待保存的模型</strong><span class="hint" id="apiSelectedCount"></span></div>
+      <div id="apiSelectedList"></div>
+      <div class="button-row">
+        <button class="primary-button" id="probeSelectedButton" type="button" disabled>测试所选模型能力</button>
+        <button class="secondary-button" id="saveApiConnectionButton" type="button" disabled>保存连接</button>
+        <span class="hint" id="probeHint"></span>
+      </div>
+    </div>
+
+    <details class="api-test-result" id="apiTestResult" hidden>
+      <summary>测试结果</summary>
+      <div id="apiTestResultBody"></div>
+    </details>
+  </dialog>
+
+  <dialog id="apiDeleteDialog" class="dialog">
+    <p class="section-kicker">IRREVERSIBLE</p>
+    <h2>删除这个 API 连接？</h2>
+    <p>连接、其下所有模型和本机加密保存的 API Key 都会被删除；如果它是当前模型，会自动切回离线直通。</p>
+    <div class="dialog-actions">
+      <button class="ghost-button" id="cancelApiDeleteButton" type="button">取消</button>
+      <button class="danger-button" id="confirmApiDeleteButton" type="button">删除连接</button>
     </div>
   </dialog>
 

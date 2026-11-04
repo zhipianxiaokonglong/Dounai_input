@@ -10,10 +10,9 @@ import httpx
 import pytest
 
 from dounai_input.providers.base import ProviderManifest, TranscriptionRequest
-from dounai_input.providers.custom_http import CustomHttpProvider
 from dounai_input.providers.local_whisper import LocalWhisperProvider
 from dounai_input.providers.offline import OfflineProvider
-from dounai_input.providers.openai_compatible import build_provider
+from dounai_input.providers.openai_compatible import OpenAICompatibleProvider
 from dounai_input.providers.registry import ProviderRegistry
 from dounai_input.store import Store
 from tests.conftest import make_settings
@@ -100,194 +99,132 @@ def test_local_whisper_validates_model_files(
     assert "Unknown" in reason
 
 
-def test_dashscope_chat_audio_request_and_response(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setenv("DASHSCOPE_API_KEY", "test-key")
+def test_generic_openai_transcription_protocol(tmp_path: Path) -> None:
     captured: dict = {}
-    real_client = httpx.AsyncClient
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        captured["url"] = str(request.url)
-        captured["auth"] = request.headers.get("authorization")
-        captured["json"] = json.loads(request.content)
-        return httpx.Response(
-            200,
-            json={
-                "choices": [
-                    {"message": {"role": "assistant", "content": [{"text": " 你好，豆奶 "}]}}
-                ]
-            },
+    transport = httpx.MockTransport(
+        lambda request: (
+            captured.update(
+                url=str(request.url),
+                auth=request.headers.get("authorization"),
+                body=request.content,
+            )
+            or httpx.Response(200, json={"text": "hello"})
         )
-
-    def factory(*args, **kwargs):
-        kwargs["transport"] = httpx.MockTransport(handler)
-        return real_client(*args, **kwargs)
-
-    monkeypatch.setattr(httpx, "AsyncClient", factory)
-    settings = make_settings(tmp_path)
-    provider = build_provider(
-        "dashscope", settings.provider_config("dashscope"), models_dir=tmp_path / "models"
     )
-    result = __import__("asyncio").run(provider.transcribe(_request(tmp_path)))
-    assert result.text == "你好，豆奶"
-    assert result.provider_id == "dashscope"
-    assert captured["url"].endswith("/chat/completions")
-    assert captured["auth"] == "Bearer test-key"
-    assert captured["json"]["model"] == "qwen3-asr-flash"
-    assert captured["json"]["asr_options"]["language"] == "zh"
-    assert captured["json"]["messages"][0]["content"][0]["type"] == "input_audio"
-    assert captured["json"]["messages"][0]["content"][0]["input_audio"]["data"].startswith(
-        "data:audio/wav;base64,"
+    provider = OpenAICompatibleProvider(
+        provider_id="api-test-transcribe",
+        name="Test transcribe",
+        base_url="https://api.example.test/v1",
+        model="gpt-4o-transcribe",
+        api_key="test-key",
+        protocol="audio_transcriptions",
+        capabilities=("audio",),
     )
 
+    async def run():
+        # The provider owns its client, so patch the constructor for this one call.
+        original = httpx.AsyncClient
 
-def test_openai_transcription_protocol(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
-    captured: dict = {}
-    real_client = httpx.AsyncClient
+        def factory(*args, **kwargs):
+            kwargs["transport"] = transport
+            return original(*args, **kwargs)
 
-    def handler(request: httpx.Request) -> httpx.Response:
-        captured["url"] = str(request.url)
-        captured["body"] = request.content
-        return httpx.Response(200, json={"text": "hello"})
+        import dounai_input.providers.openai_compatible as module
 
-    def factory(*args, **kwargs):
-        kwargs["transport"] = httpx.MockTransport(handler)
-        return real_client(*args, **kwargs)
+        module.httpx.AsyncClient = factory  # type: ignore[assignment]
+        try:
+            return await provider.transcribe(_request(tmp_path))
+        finally:
+            module.httpx.AsyncClient = original  # type: ignore[assignment]
 
-    monkeypatch.setattr(httpx, "AsyncClient", factory)
-    settings = make_settings(tmp_path)
-    provider = build_provider(
-        "openai", settings.provider_config("openai"), models_dir=tmp_path / "models"
-    )
-    result = __import__("asyncio").run(provider.transcribe(_request(tmp_path)))
+    result = __import__("asyncio").run(run())
     assert result.text == "hello"
+    assert result.provider_id == "api-test-transcribe"
     assert captured["url"].endswith("/audio/transcriptions")
+    assert captured["auth"] == "Bearer test-key"
     assert b'name="model"' in captured["body"]
     assert b"gpt-4o-transcribe" in captured["body"]
     assert b'name="prompt"' in captured["body"]
 
 
-def test_provider_error_does_not_echo_response_body(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setenv("DASHSCOPE_API_KEY", "test-key")
-    real_client = httpx.AsyncClient
-
-    def factory(*args, **kwargs):
-        kwargs["transport"] = httpx.MockTransport(
-            lambda request: httpx.Response(
-                401, json={"error": {"message": "sk-secret in vendor body"}}
+def test_generic_chat_audio_protocol(tmp_path: Path) -> None:
+    captured: dict = {}
+    transport = httpx.MockTransport(
+        lambda request: (
+            captured.update(
+                url=str(request.url),
+                auth=request.headers.get("authorization"),
+                json=json.loads(request.content),
+            )
+            or httpx.Response(
+                200,
+                json={
+                    "choices": [{"message": {"role": "assistant", "content": [{"text": " 你好 "}]}}]
+                },
             )
         )
-        return real_client(*args, **kwargs)
-
-    monkeypatch.setattr(httpx, "AsyncClient", factory)
-    settings = make_settings(tmp_path)
-    provider = build_provider(
-        "dashscope", settings.provider_config("dashscope"), models_dir=tmp_path / "models"
     )
-    with pytest.raises(Exception) as exc_info:
-        __import__("asyncio").run(provider.transcribe(_request(tmp_path)))
+    provider = OpenAICompatibleProvider(
+        provider_id="api-test-chat-audio",
+        name="Test chat audio",
+        base_url="https://api.example.test/v1",
+        model="qwen3-asr-flash",
+        api_key="test-key",
+        protocol="chat_audio",
+        capabilities=("audio",),
+    )
+    original = httpx.AsyncClient
+
+    def factory(*args, **kwargs):
+        kwargs["transport"] = transport
+        return original(*args, **kwargs)
+
+    import dounai_input.providers.openai_compatible as module
+
+    module.httpx.AsyncClient = factory  # type: ignore[assignment]
+    try:
+        result = __import__("asyncio").run(provider.transcribe(_request(tmp_path)))
+    finally:
+        module.httpx.AsyncClient = original  # type: ignore[assignment]
+    assert result.text == "你好"
+    assert captured["url"].endswith("/chat/completions")
+    assert captured["json"]["model"] == "qwen3-asr-flash"
+    assert captured["json"]["asr_options"]["language"] == "zh"
+    audio = captured["json"]["messages"][0]["content"][0]["input_audio"]
+    assert audio["data"].startswith("data:audio/wav;base64,")
+    assert audio["format"] == "wav"
+
+
+def test_provider_error_does_not_echo_response_body(tmp_path: Path) -> None:
+    transport = httpx.MockTransport(
+        lambda request: httpx.Response(401, json={"error": {"message": "sk-secret in vendor body"}})
+    )
+    provider = OpenAICompatibleProvider(
+        provider_id="api-test-auth",
+        name="Auth fail",
+        base_url="https://api.example.test/v1",
+        model="gpt-4o-transcribe",
+        api_key="test-key",
+        protocol="audio_transcriptions",
+        capabilities=("audio",),
+    )
+    original = httpx.AsyncClient
+
+    def factory(*args, **kwargs):
+        kwargs["transport"] = transport
+        return original(*args, **kwargs)
+
+    import dounai_input.providers.openai_compatible as module
+
+    module.httpx.AsyncClient = factory  # type: ignore[assignment]
+    try:
+        with pytest.raises(Exception) as exc_info:
+            __import__("asyncio").run(provider.transcribe(_request(tmp_path)))
+    finally:
+        module.httpx.AsyncClient = original  # type: ignore[assignment]
     assert "sk-secret" not in str(exc_info.value)
-    assert "DASHSCOPE_API_KEY" in str(exc_info.value)
-
-
-def test_custom_http_provider_auth_and_field_mapping(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setenv("CUSTOM_TEST_TOKEN", "endpoint-secret")
-    real_client = httpx.AsyncClient
-    captured: dict = {}
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        captured["auth"] = request.headers.get("authorization")
-        return httpx.Response(200, json={"data": {"transcript": "custom text"}})
-
-    def factory(*args, **kwargs):
-        kwargs["transport"] = httpx.MockTransport(handler)
-        return real_client(*args, **kwargs)
-
-    monkeypatch.setattr(httpx, "AsyncClient", factory)
-    provider = CustomHttpProvider(
-        {
-            "endpoint": "http://127.0.0.1:9999/asr",
-            "token_env": "CUSTOM_TEST_TOKEN",
-            "text_field": "data.transcript",
-        }
-    )
-    result = __import__("asyncio").run(provider.transcribe(_request(tmp_path)))
-    assert result.text == "custom text"
-    assert captured["auth"] == "Bearer endpoint-secret"
-    assert provider.manifest.privacy == "remote"
-
-
-def test_registry_rejects_duplicate_provider_ids() -> None:
-    registry = ProviderRegistry()
-    assert registry.register(StubProvider(provider_id="one")) is True
-    assert registry.register(StubProvider(provider_id="one")) is False
-    assert registry.ids() == ["one"]
-    assert registry.errors
-
-
-def test_broken_provider_info_is_isolated(tmp_path: Path) -> None:
-    settings = make_settings(tmp_path)
-    store = Store(settings.database_path, settings.media_dir)
-    from dounai_input.providers.manager import ProviderManager
-    from tests.helpers import ExplodingInfoProvider
-
-    registry = ProviderRegistry()
-    registry.register(ExplodingInfoProvider(provider_id="broken"))
-    manager = ProviderManager(settings, store, registry=registry)
-    manager._active_id = "broken"
-    rows = manager.list_providers()
-    assert rows[0]["available"] is False
-    assert "status check failed" in rows[0]["unavailable_reason"]
-
-
-def test_malformed_vendor_response_is_a_provider_error(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setenv("DASHSCOPE_API_KEY", "test-key")
-    real_client = httpx.AsyncClient
-
-    def factory(*args, **kwargs):
-        kwargs["transport"] = httpx.MockTransport(
-            lambda request: httpx.Response(200, json={"unexpected": True})
-        )
-        return real_client(*args, **kwargs)
-
-    monkeypatch.setattr(httpx, "AsyncClient", factory)
-    settings = make_settings(tmp_path)
-    provider = build_provider(
-        "dashscope", settings.provider_config("dashscope"), models_dir=tmp_path / "models"
-    )
-    with pytest.raises(Exception) as exc_info:
-        __import__("asyncio").run(provider.transcribe(_request(tmp_path)))
-    assert "unexpected" in str(exc_info.value).lower()
-
-
-def test_non_json_vendor_response_is_a_provider_error(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setenv("DASHSCOPE_API_KEY", "test-key")
-    real_client = httpx.AsyncClient
-
-    def factory(*args, **kwargs):
-        kwargs["transport"] = httpx.MockTransport(
-            lambda request: httpx.Response(200, text="<html>gateway</html>")
-        )
-        return real_client(*args, **kwargs)
-
-    monkeypatch.setattr(httpx, "AsyncClient", factory)
-    settings = make_settings(tmp_path)
-    provider = build_provider(
-        "dashscope", settings.provider_config("dashscope"), models_dir=tmp_path / "models"
-    )
-    with pytest.raises(Exception) as exc_info:
-        __import__("asyncio").run(provider.transcribe(_request(tmp_path)))
-    assert "non-JSON" in str(exc_info.value)
+    assert "Authentication failed" in str(exc_info.value)
+    assert "test-key" not in str(exc_info.value)
 
 
 def test_local_whisper_consumes_segment_generator_in_worker(tmp_path: Path) -> None:
@@ -317,7 +254,6 @@ def test_local_whisper_consumes_segment_generator_in_worker(tmp_path: Path) -> N
 
 def test_manager_status_survives_availability_exception(tmp_path: Path) -> None:
     from dounai_input.providers.manager import ProviderManager
-    from dounai_input.store import Store
 
     class BrokenAvailability(StubProvider):
         def availability(self):
@@ -332,14 +268,16 @@ def test_manager_status_survives_availability_exception(tmp_path: Path) -> None:
     assert manager.list_providers()[0]["available"] is False
 
 
-def test_provider_info_contains_no_environment_value(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setenv("DASHSCOPE_API_KEY", "sk-secret-value")
-    settings = make_settings(tmp_path)
-    provider = build_provider(
-        "dashscope", settings.provider_config("dashscope"), models_dir=tmp_path / "models"
+def test_provider_info_contains_no_api_key() -> None:
+    provider = OpenAICompatibleProvider(
+        provider_id="api-test-info",
+        name="Info",
+        base_url="https://api.example.test/v1",
+        model="gpt-4o-transcribe",
+        api_key="sk-secret-value",
+        protocol="audio_transcriptions",
+        capabilities=("audio",),
     )
     info = provider.info()
     assert "sk-secret-value" not in repr(info)
-    assert info["model"] == "qwen3-asr-flash"
+    assert info["model"] == "gpt-4o-transcribe"

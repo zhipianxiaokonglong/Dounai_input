@@ -43,6 +43,10 @@ class ProviderRegistry:
     def get(self, provider_id: str) -> BaseProvider | None:
         return self._providers.get(provider_id)
 
+    def unregister(self, provider_id: str) -> BaseProvider | None:
+        """Remove a dynamically managed provider; built-ins are not special-cased."""
+        return self._providers.pop(provider_id, None)
+
     def all(self) -> list[BaseProvider]:
         return list(self._providers.values())
 
@@ -125,7 +129,6 @@ def build_registry(settings: Settings) -> ProviderRegistry:
     from .custom_http import CustomHttpProvider
     from .local_whisper import LocalWhisperProvider
     from .offline import OfflineProvider
-    from .openai_compatible import build_provider
 
     registry = ProviderRegistry()
     factories: dict[str, Any] = {
@@ -133,10 +136,6 @@ def build_registry(settings: Settings) -> ProviderRegistry:
         "local-whisper": lambda config: LocalWhisperProvider(
             config, models_dir=settings.models_dir
         ),
-        "dashscope": lambda config: build_provider(
-            "dashscope", config, models_dir=settings.models_dir
-        ),
-        "openai": lambda config: build_provider("openai", config, models_dir=settings.models_dir),
         "custom-http": lambda config: CustomHttpProvider(config),
     }
     for provider_id, factory in factories.items():

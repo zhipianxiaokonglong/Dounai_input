@@ -27,11 +27,13 @@ class PrivacyService:
         store: Store,
         media: MediaService,
         voiceprint: VoiceprintService,
+        api_connections: Any | None = None,
     ) -> None:
         self.settings = settings
         self.store = store
         self.media = media
         self.voiceprint = voiceprint
+        self.api_connections = api_connections
         self.policy_text = _load_policy_text()
         self.policy_sha256 = hashlib.sha256(self.policy_text.encode("utf-8")).hexdigest()
 
@@ -110,8 +112,16 @@ class PrivacyService:
         return {"deleted": deleted, **self.status()}
 
     def delete_all_data(self) -> dict[str, Any]:
+        connections = len(self.store.list_api_connections())
         result = self.store.delete_all_personal_data()
         removed_files = self.store.purge_media_files(result.media_paths)
+        if self.api_connections is not None:
+            # API keys are personal credentials; drop any dynamic provider
+            # instances derived from them and fall back to a local provider.
+            self.api_connections.resync()
+            if not self.store.list_api_connections():
+                # No encrypted keys remain, so the master key itself is now noise.
+                self.api_connections.secrets.delete_master_key()
         self.store.audit_privacy(
             "all_personal_data_deleted",
             {"events": result.events, "media": result.media, "files": removed_files},
@@ -121,12 +131,31 @@ class PrivacyService:
             "events": result.events,
             "media_files": result.media,
             "files_removed": removed_files,
+            "api_connections_deleted": connections,
             "voiceprint_deleted": True,
             "consent_deleted": True,
         }
 
     def export_zip(self) -> tuple[tempfile.SpooledTemporaryFile[bytes], str]:
         snapshot = self.store.export_snapshot()
+        snapshot["api_connections"] = [
+            {
+                "id": connection.id,
+                "name": connection.name,
+                "base_url": connection.base_url,
+                "key_fingerprint": connection.key_fingerprint,
+                "models": [
+                    {
+                        "provider_id": model.provider_id,
+                        "model_id": model.model_id,
+                        "capabilities": list(model.capabilities),
+                        "transcription_protocol": model.transcription_protocol,
+                    }
+                    for model in self.store.list_api_models(connection.id)
+                ],
+            }
+            for connection in self.store.list_api_connections()
+        ]
         exported_at = str(snapshot["exported_at"])
         filename = f"dounai-input-export-{exported_at.replace(':', '').replace('-', '')}.zip"
         archive = tempfile.SpooledTemporaryFile(  # noqa: SIM115 - returned to caller

@@ -22,7 +22,7 @@ from uuid import UUID
 from .events import InputEvent
 from .settings_helpers import to_utc_iso
 
-_SCHEMA_VERSION = 2
+_SCHEMA_VERSION = 3
 
 
 @dataclass(frozen=True)
@@ -62,6 +62,33 @@ class MediaRecord:
     size: int
     sha256: str
     created_at: str
+
+
+@dataclass(frozen=True)
+class ApiConnectionRecord:
+    id: str
+    name: str
+    base_url: str
+    allow_private: bool
+    allow_http: bool
+    key_ciphertext: bytes
+    key_nonce: bytes
+    key_fingerprint: str
+    created_at: str
+    updated_at: str
+
+
+@dataclass(frozen=True)
+class ApiModelRecord:
+    provider_id: str
+    connection_id: str
+    model_id: str
+    display_name: str
+    capabilities: tuple[str, ...]
+    probes: dict[str, Any]
+    transcription_protocol: str | None
+    created_at: str
+    updated_at: str
 
 
 @dataclass(frozen=True)
@@ -164,6 +191,35 @@ class Store:
                     recorded_at TEXT NOT NULL,
                     details_json TEXT NOT NULL
                 );
+
+                CREATE TABLE IF NOT EXISTS api_connections (
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    base_url TEXT NOT NULL,
+                    allow_private INTEGER NOT NULL DEFAULT 0,
+                    allow_http INTEGER NOT NULL DEFAULT 0,
+                    key_ciphertext BLOB NOT NULL,
+                    key_nonce BLOB NOT NULL,
+                    key_fingerprint TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS api_models (
+                    provider_id TEXT PRIMARY KEY,
+                    connection_id TEXT NOT NULL,
+                    model_id TEXT NOT NULL,
+                    display_name TEXT NOT NULL,
+                    capabilities_json TEXT NOT NULL,
+                    probes_json TEXT NOT NULL,
+                    transcription_protocol TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY(connection_id) REFERENCES api_connections(id)
+                        ON DELETE CASCADE
+                );
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_api_models_conn_model
+                    ON api_models(connection_id, model_id);
                 """
             )
             event_columns = {
@@ -365,6 +421,142 @@ class Store:
         with self._connect() as connection:
             connection.execute("DELETE FROM media WHERE id = ?", (media_id,))
 
+    # ------------------------------------------------------------------ api connections
+
+    def list_api_connections(self) -> list[ApiConnectionRecord]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM api_connections ORDER BY created_at ASC"
+            ).fetchall()
+        return [self._row_to_api_connection(row) for row in rows]
+
+    def get_api_connection(self, connection_id: str) -> ApiConnectionRecord | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM api_connections WHERE id = ?", (connection_id,)
+            ).fetchone()
+        return self._row_to_api_connection(row) if row else None
+
+    def upsert_api_connection(self, record: ApiConnectionRecord) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO api_connections(
+                    id, name, base_url, allow_private, allow_http,
+                    key_ciphertext, key_nonce, key_fingerprint, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    name = excluded.name,
+                    base_url = excluded.base_url,
+                    allow_private = excluded.allow_private,
+                    allow_http = excluded.allow_http,
+                    key_ciphertext = excluded.key_ciphertext,
+                    key_nonce = excluded.key_nonce,
+                    key_fingerprint = excluded.key_fingerprint,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    record.id,
+                    record.name,
+                    record.base_url,
+                    1 if record.allow_private else 0,
+                    1 if record.allow_http else 0,
+                    record.key_ciphertext,
+                    record.key_nonce,
+                    record.key_fingerprint,
+                    record.created_at,
+                    record.updated_at,
+                ),
+            )
+
+    def delete_api_connection(self, connection_id: str) -> None:
+        with self._connect() as connection:
+            connection.execute("DELETE FROM api_models WHERE connection_id = ?", (connection_id,))
+            connection.execute("DELETE FROM api_connections WHERE id = ?", (connection_id,))
+
+    def list_api_models(self, connection_id: str | None = None) -> list[ApiModelRecord]:
+        with self._connect() as connection:
+            if connection_id is None:
+                rows = connection.execute(
+                    "SELECT * FROM api_models ORDER BY created_at ASC"
+                ).fetchall()
+            else:
+                rows = connection.execute(
+                    "SELECT * FROM api_models WHERE connection_id = ? ORDER BY created_at ASC",
+                    (connection_id,),
+                ).fetchall()
+        return [self._row_to_api_model(row) for row in rows]
+
+    def get_api_model(self, provider_id: str) -> ApiModelRecord | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM api_models WHERE provider_id = ?", (provider_id,)
+            ).fetchone()
+        return self._row_to_api_model(row) if row else None
+
+    def upsert_api_model(self, record: ApiModelRecord) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO api_models(
+                    provider_id, connection_id, model_id, display_name,
+                    capabilities_json, probes_json, transcription_protocol,
+                    created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(provider_id) DO UPDATE SET
+                    model_id = excluded.model_id,
+                    display_name = excluded.display_name,
+                    capabilities_json = excluded.capabilities_json,
+                    probes_json = excluded.probes_json,
+                    transcription_protocol = excluded.transcription_protocol,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    record.provider_id,
+                    record.connection_id,
+                    record.model_id,
+                    record.display_name,
+                    json.dumps(list(record.capabilities)),
+                    json.dumps(record.probes, sort_keys=True),
+                    record.transcription_protocol,
+                    record.created_at,
+                    record.updated_at,
+                ),
+            )
+
+    def delete_api_model(self, provider_id: str) -> None:
+        with self._connect() as connection:
+            connection.execute("DELETE FROM api_models WHERE provider_id = ?", (provider_id,))
+
+    @staticmethod
+    def _row_to_api_connection(row: sqlite3.Row) -> ApiConnectionRecord:
+        return ApiConnectionRecord(
+            id=row["id"],
+            name=row["name"],
+            base_url=row["base_url"],
+            allow_private=bool(row["allow_private"]),
+            allow_http=bool(row["allow_http"]),
+            key_ciphertext=row["key_ciphertext"],
+            key_nonce=row["key_nonce"],
+            key_fingerprint=row["key_fingerprint"],
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
+        )
+
+    @staticmethod
+    def _row_to_api_model(row: sqlite3.Row) -> ApiModelRecord:
+        return ApiModelRecord(
+            provider_id=row["provider_id"],
+            connection_id=row["connection_id"],
+            model_id=row["model_id"],
+            display_name=row["display_name"],
+            capabilities=tuple(json.loads(row["capabilities_json"])),
+            probes=json.loads(row["probes_json"]),
+            transcription_protocol=row["transcription_protocol"],
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
+        )
+
     # ------------------------------------------------------------------ consent
 
     def latest_consent(self) -> ConsentRecord | None:
@@ -554,6 +746,8 @@ class Store:
             events = connection.execute("SELECT COUNT(*) AS c FROM events").fetchone()["c"]
             connection.execute("DELETE FROM events")
             connection.execute("DELETE FROM media")
+            connection.execute("DELETE FROM api_models")
+            connection.execute("DELETE FROM api_connections")
             connection.execute("DELETE FROM voiceprint_profiles")
             connection.execute("DELETE FROM consents")
             connection.execute("DELETE FROM privacy_audit")
