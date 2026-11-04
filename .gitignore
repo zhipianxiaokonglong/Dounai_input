@@ -5,6 +5,9 @@
 dounai.toml
 *.local.toml
 
+# Host launcher manifest (local development only)
+manifest.json
+
 # Runtime data: events, media, SQLite, voiceprint templates, model weights
 data/
 models/
