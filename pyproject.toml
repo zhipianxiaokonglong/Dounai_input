@@ -4,7 +4,7 @@ requires = ["hatchling>=1.27"]
 
 [project]
 name = "dounai-input"
-version = "0.2.0"
+version = "0.2.1"
 description = "Privacy-first multimodal input gateway for the Dounai AI companion"
 readme = "README.md"
 license = { file = "LICENSE" }

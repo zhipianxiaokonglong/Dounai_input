@@ -8,6 +8,9 @@ class DounaiError(Exception):
 
     code = "internal_error"
     status_code = 500
+    #: Consumers use this to decide whether the same request may succeed later.
+    #: Only transient failures (provider/network/timeout) override it.
+    retryable = False
 
     def __init__(self, message: str, *, detail: str | None = None) -> None:
         super().__init__(message)

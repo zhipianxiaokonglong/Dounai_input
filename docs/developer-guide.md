@@ -480,6 +480,10 @@ session，先讨论契约升级，不要本地扩展；session/source 通过响�
 - 新业务端点放在 `/v1` 下，默认继承 Bearer 鉴权。
 - 媒体能力 URL 是唯一例外，必须使用高熵 ID 并保持只读。
 - 错误用 `DounaiError` 子类；不要把内部异常直接抛给客户端。
+- 错误体统一由 `api.py::_error_json` 生成，必须包含 `retryable` 与 `request_id`；
+  新增错误类时显式声明类级 `retryable`（默认 `False`，仅瞬时故障才为 `True`）。
+- 所有响应都必须带 `X-Dounai-Contract-Version` 与 `X-Dounai-Module-Version`，
+  不要手工设置；中间件已统一注入，`/v1/contract` 响应体保持纯 JSON Schema。
 - 所有响应加 `no-store`（已由中间件统一处理）。
 - 新增写接口必须考虑 CSRF：浏览器跨站写会被 Origin/Sec-Fetch-Site 中间件拒绝。
 - 新增上传必须限制大小并用魔数检测，不要信任 `Content-Type` 或文件名。

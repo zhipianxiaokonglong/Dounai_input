@@ -51,7 +51,7 @@ Authorization: Bearer <token>
 | `unavailable` | 无可用 ASR、provider 失败/超时、选中模型不支持转写 | 不要使用 `asr_text`；提示或降级 |
 | `not_applicable` | 文字/图像输入 | 无需处理 |
 
-该字段在 JSON Schema 中**不是 required**：v1.0 事件仍可被解析，v1.1 生产者始终填充。新消费方必须检查它。契约版本通过 `x-contract-version: "1.1"` 与 `/healthz` 的 `contract_version` 暴露。
+该字段在 JSON Schema 中**不是 required**：v1.0 事件仍可被解析，v1.1 生产者始终填充。新消费方必须检查它。契约版本通过 `x-contract-version: "1.1"`、`/healthz` 的 `contract_version` 与所有响应头 `X-Dounai-Contract-Version` 暴露；详见 [10.1 版本协商](#101-版本协商契约版本--模块版本)。
 
 ### 媒体引用
 
@@ -557,24 +557,47 @@ curl -X POST https://gateway.example.com/v1/inputs/audio \
 
 ## 7. 错误格式
 
-除 FastAPI 自动校验外，业务错误统一：
+除 FastAPI 自动校验外，业务错误统一为下面的信封。`retryable` 与 `request_id`
+是 0.2.1 新增的**增量字段**：只读 `code`/`message` 的旧消费方不受影响。
 
 ```json
 {
   "error": {
     "code": "unsupported_media",
-    "message": "Unsupported image format. Use JPEG, PNG, WebP or GIF."
+    "message": "Unsupported image format. Use JPEG, PNG, WebP or GIF.",
+    "retryable": false,
+    "request_id": "6f1c9b0a4e2d4d7ab3f2c1e58d9a0b7c"
   }
 }
 ```
 
-请求参数校验失败时附加：
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `code` | string | 稳定错误码，见下表 |
+| `message` | string | 可展示给用户的摘要；不含厂商正文、密钥或堆栈 |
+| `retryable` | boolean | `true` 表示同一请求稍后重试可能成功 |
+| `request_id` | string | 与 `X-Request-ID` 相同，用于日志关联 |
+| `fields` | array | 仅参数校验失败时出现 |
+
+`retryable` 的判定：
+
+| 场景 | `retryable` |
+| --- | --- |
+| provider 失败/超时/连接失败（`provider_unavailable`，仅发生在会调用厂商的路径） | `true` |
+| 模型发现网络/服务异常（`api_discovery_failed`） | `true` |
+| 未预期内部错误（`internal_error`） | `true` |
+| 401 / 403 / 404 / 409 / 413 / 415 / 422（含 `api_auth_failed`） | `false` |
+| 厂商密钥错误、本地模型缺失等确定性失败 | `false` |
+
+请求参数校验失败时附加 `fields`：
 
 ```json
 {
   "error": {
     "code": "invalid_request",
     "message": "Request validation failed.",
+    "retryable": false,
+    "request_id": "…",
     "fields": [{"field": "body.text", "message": "Field required"}]
   }
 }
@@ -635,11 +658,43 @@ curl -X POST https://gateway.example.com/v1/inputs/audio \
   `asr_status`。后续任何新增**必需**字段都视为破坏性变更，必须先升级契约并
   同步下游。
 
-包版本 **0.2.0** 只改变 provider 的接入方式，事件契约仍为 v1.1：静态的
-`dashscope` / `openai` provider 与 `DASHSCOPE_API_KEY` / `OPENAI_API_KEY`
-已移除，改用运行时的 API 连接（`/v1/api-connections*`）。已有 `dounai.toml`
-中的 `[providers.dashscope]`、`[providers.openai]` 会被忽略；`[models].fallback`
-里的旧 provider id 也会被跳过，默认只回退到 `local-whisper`。
+### 10.1 版本协商（契约版本 ≠ 模块版本）
+
+两者是不同概念，不要混用：
+
+| 名称 | 含义 | 当前值 | 出现在 |
+| --- | --- | --- | --- |
+| 契约版本 | 事件与接口的兼容承诺 | `1.1` | `x-contract-version`、`/healthz.contract_version`、响应头 |
+| 模块版本 | 本包的可安装版本 | 见 `/healthz.version` | `/healthz.version`、响应头 |
+
+`GET /v1/contract` 的响应体**始终是纯 JSON Schema**，模块版本不会混入其中；
+版本元数据放在响应头与 `/healthz`：
+
+```http
+X-Dounai-Contract-Version: 1.1
+X-Dounai-Module-Version: <模块版本>
+```
+
+所有响应（含错误响应与 `/healthz`）都会带这两个头，消费方不必额外请求即可发现
+契约漂移。头缺失按“未知版本”处理，不要硬失败。
+
+兼容策略：
+
+| 情况 | 期望行为 |
+| --- | --- |
+| 同一主版本（如 `1.0` ↔ `1.1`） | **降级并告警**：按可选字段缺失处理，记录日志即可继续 |
+| 主版本不同（如 `1.x` ↔ `2.x`） | **拒绝新契约请求并告警**，或显式降级为已知主版本 |
+| 契约版本头缺失 | 视为未知版本，按最保守的已知版本解析并告警 |
+
+原因：v1.1 只新增可选字段，旧 v1.0 消费方仍可解析；主版本升级才会引入破坏性
+字段或语义变化。
+
+包版本 **0.2.1** 只增量补错误体与版本头，事件契约仍为 v1.1。**0.2.0** 改变了
+provider 的接入方式：静态的 `dashscope` / `openai` provider 与
+`DASHSCOPE_API_KEY` / `OPENAI_API_KEY` 已移除，改用运行时的 API 连接
+（`/v1/api-connections*`）。已有 `dounai.toml` 中的 `[providers.dashscope]`、
+`[providers.openai]` 会被忽略；`[models].fallback` 里的旧 provider id 也会被
+跳过，默认只回退到 `local-whisper`。
 
 会话与来源不进入事件体，通过以下响应头稳定回传：
 
@@ -649,3 +704,5 @@ curl -X POST https://gateway.example.com/v1/inputs/audio \
 | `X-Dounai-Source` | 事件读回 |
 | `X-Dounai-Media-Id` | 事件读回（有媒体时） |
 | `X-Dounai-ASR-Status` | 所有输入响应、事件读回 |
+| `X-Dounai-Contract-Version` | 所有响应（含错误响应） |
+| `X-Dounai-Module-Version` | 所有响应（含错误响应） |

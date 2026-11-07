@@ -55,6 +55,7 @@ class ApiAuthError(ApiConnectionError):
 class ApiDiscoveryError(DounaiError):
     code = "api_discovery_failed"
     status_code = 502
+    retryable = True
 
 
 def validate_api_key(raw: str) -> str:

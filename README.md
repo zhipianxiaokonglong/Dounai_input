@@ -81,6 +81,9 @@ curl -X POST http://127.0.0.1:8000/v1/inputs/text \
 直接取得字节。
 
 完整接口、错误码与 curl 示例见 [docs/api.md](docs/api.md)，机器可读契约见 `GET /v1/contract`。
+所有响应都带 `X-Dounai-Contract-Version`（契约版本，当前 `1.1`）与
+`X-Dounai-Module-Version`（包版本），错误体还带 `retryable` / `request_id`，
+便于下游做契约漂移检测与重试判断。
 
 ## 本地免费模型（可选）
 

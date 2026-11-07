@@ -382,7 +382,11 @@ api_models(provider_id PK, connection_id FK→api_connections(id) ON DELETE CASC
 - API 连接的发现/探测在日志与错误中只暴露结论状态与延迟，不记录 Key、查询串或响应正文；
   Key 无法解密时记录连接 id 并注销对应 provider。
 - `GET /healthz` 轻量；`GET /v1/providers` 提供能力/可用性/熔断状态（含 `api-*`）。
-- 响应头 `X-Request-ID` 用于把客户端问题与服务日志关联。
+- 响应头 `X-Request-ID` 用于把客户端问题与服务日志关联；错误体同时回传
+  `request_id`，消费方可直接引用。
+- 所有响应带 `X-Dounai-Contract-Version` / `X-Dounai-Module-Version`，用于运行时
+  契约漂移检测；契约版本（`1.1`）与模块版本（`0.x.y`）语义不同，前者只在打破
+  兼容时才升主版本。
 - 无内置指标/追踪/遥测。需要 Prometheus/OTel 的部署方可在反向代理或 fork 中接入；本项目刻意不外发数据。
 
 ## 11. 未来演进（不承诺）

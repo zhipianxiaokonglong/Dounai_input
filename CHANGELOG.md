@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.2.1] - 2026-11-07
+
+### Added
+
+- 所有响应（含错误响应与 `/healthz`）新增版本头：
+  `X-Dounai-Contract-Version`（事件契约版本）与 `X-Dounai-Module-Version`（包版本），
+  消费方无需额外请求即可发现契约漂移
+- 错误体新增增量字段 `retryable`（是否值得重试）与 `request_id`（与 `X-Request-ID` 一致）；
+  参数校验失败仍带 `fields`
+- `api.md` 新增「版本协商」小节，明确契约版本 ≠ 模块版本、同主版本降级告警 /
+  主版本不同拒绝的消费方策略
+
+### Changed
+
+- `ApiDiscoveryError`（502 `api_discovery_failed`）标记为可重试；未预期 500 标记为可重试；
+  鉴权、参数、隐私、来源与冲突类错误明确为不可重试
+- 事件契约仍为 v1.1，接口路径、事件字段、数据库结构均未变化
+
 ## [0.2.0] - 2026-11-04
 
 ### Added

@@ -581,7 +581,12 @@ def _install_middleware(app: FastAPI, settings: Settings) -> None:
             # send no Origin header and remain supported.
             fetch_site = request.headers.get("sec-fetch-site", "")
             if fetch_site == "cross-site":
-                return _error_json(403, "forbidden_origin", "Cross-site writes are not allowed.")
+                return _error_json(
+                    403,
+                    "forbidden_origin",
+                    "Cross-site writes are not allowed.",
+                    request=request,
+                )
             origin = request.headers.get("origin")
             if origin:
                 origin_parts = urlsplit(origin)
@@ -593,7 +598,10 @@ def _install_middleware(app: FastAPI, settings: Settings) -> None:
                     origin_parts.netloc.lower() not in allowed_hosts
                 ):
                     return _error_json(
-                        403, "forbidden_origin", "Origin does not match this gateway."
+                        403,
+                        "forbidden_origin",
+                        "Origin does not match this gateway.",
+                        request=request,
                     )
         content_length = request.headers.get("content-length")
         if content_length:
@@ -602,10 +610,20 @@ def _install_middleware(app: FastAPI, settings: Settings) -> None:
             except ValueError:
                 declared = -1
             if declared < 0:
-                return _error_json(400, "invalid_request", "Invalid Content-Length header.")
+                return _error_json(
+                    400,
+                    "invalid_request",
+                    "Invalid Content-Length header.",
+                    request=request,
+                )
             max_body = max(settings.max_image_bytes, settings.max_audio_bytes) * 8 + 2**20
             if declared > max_body:
-                return _error_json(413, "payload_too_large", "Request body is too large.")
+                return _error_json(
+                    413,
+                    "payload_too_large",
+                    "Request body is too large.",
+                    request=request,
+                )
         response = await call_next(request)
         response.headers.setdefault("X-Content-Type-Options", "nosniff")
         response.headers.setdefault("Referrer-Policy", "no-referrer")
@@ -622,6 +640,11 @@ def _install_middleware(app: FastAPI, settings: Settings) -> None:
         request.state.request_id = request_id
         response = await call_next(request)
         response.headers["X-Request-ID"] = request_id
+        # Version negotiation on every response: consumers can detect contract
+        # drift without an extra round trip while `/v1/contract` stays a pure
+        # JSON Schema document.
+        response.headers.setdefault("X-Dounai-Contract-Version", CONTRACT_VERSION)
+        response.headers.setdefault("X-Dounai-Module-Version", __version__)
         return response
 
 
@@ -634,15 +657,13 @@ def _install_error_handlers(app: FastAPI) -> None:
         for error in exc.errors()[:10]:
             location = ".".join(str(item) for item in error.get("loc", ()))
             fields.append({"field": location, "message": str(error.get("msg", "invalid"))})
-        return JSONResponse(
-            status_code=422,
-            content={
-                "error": {
-                    "code": "invalid_request",
-                    "message": "Request validation failed.",
-                    "fields": fields,
-                }
-            },
+        return _error_json(
+            422,
+            "invalid_request",
+            "Request validation failed.",
+            request=request,
+            retryable=False,
+            extra={"fields": fields},
         )
 
     @app.exception_handler(DounaiError)
@@ -653,7 +674,13 @@ def _install_error_handlers(app: FastAPI) -> None:
                 getattr(request.state, "request_id", "-"),
                 exc.message,
             )
-        return _error_json(exc.status_code, exc.code, exc.message)
+        return _error_json(
+            exc.status_code,
+            exc.code,
+            exc.message,
+            request=request,
+            retryable=bool(exc.retryable),
+        )
 
     @app.exception_handler(Exception)
     async def handle_unexpected(request: Request, exc: Exception) -> JSONResponse:
@@ -661,14 +688,39 @@ def _install_error_handlers(app: FastAPI) -> None:
             "unhandled error for request %s",
             getattr(request.state, "request_id", "-"),
         )
-        return _error_json(500, "internal_error", "An internal error occurred.")
+        # An unexpected failure may well be transient; retrying once is safe for
+        # every current endpoint because they are idempotent or user-triggered.
+        return _error_json(
+            500,
+            "internal_error",
+            "An internal error occurred.",
+            request=request,
+            retryable=True,
+        )
 
 
-def _error_json(status: int, code: str, message: str) -> JSONResponse:
-    return JSONResponse(
-        status_code=status,
-        content={"error": {"code": code, "message": message}},
-    )
+def _error_json(
+    status: int,
+    code: str,
+    message: str,
+    *,
+    request: Request | None = None,
+    retryable: bool = False,
+    extra: dict[str, Any] | None = None,
+) -> JSONResponse:
+    """Build the stable error envelope shared by every failure path.
+
+    ``retryable`` and ``request_id`` are additive fields: older consumers that
+    only read ``code``/``message`` keep working, while new ones can decide
+    whether to retry without maintaining a code table of their own.
+    """
+    error: dict[str, Any] = {"code": code, "message": message, "retryable": retryable}
+    request_id = getattr(getattr(request, "state", None), "request_id", None)
+    if request_id:
+        error["request_id"] = request_id
+    if extra:
+        error.update(extra)
+    return JSONResponse(status_code=status, content={"error": error})
 
 
 def _install_surface_routes(app: FastAPI, settings: Settings) -> None:

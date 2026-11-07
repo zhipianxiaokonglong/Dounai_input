@@ -1,8 +1,8 @@
 # 测试、故障注入与根因分析报告
 
-> 版本：0.2.0（contract v1.1）
+> 版本：0.2.1（contract v1.1）
 >
-> 测试日期：2026-10-24；审计跟进：2026-11-03；API 接入复测：2026-11-04
+> 测试日期：2026-10-24；审计跟进：2026-11-03；API 接入复测：2026-11-04；跨仓库契约补齐：2026-11-07
 >
 > 范围：豆奶输入层全部代码、接口、隐私流程、API 连接（Base URL + Key）、provider 降级、插件/模型安装与 Web 控制台
 >
@@ -10,13 +10,14 @@
 
 ## 1. 结论摘要
 
-- **自动化测试：164 passed，0 failed**（`pytest -q`，约 45 s；带覆盖率约 65 s）。
-- **总覆盖率：79%**（语句/分支综合；`store` 95%、`api` 93%、`secrets` 87%、`api_access` 79%、`api_connections` 79%、`events`/`errors` 100%）。
-- **Lint/格式**：`ruff check src tests examples` 与 `ruff format --check src tests examples` 全部通过（46 个文件）。
+- **自动化测试：174 passed，0 failed**（`pytest -q`，约 46 s；带覆盖率约 74 s）。
+- **总覆盖率：80%**（语句/分支综合；`store` 95%、`api` 93%、`secrets` 87%、`api_access` 79%、`api_connections` 79%、`events`/`errors` 100%）。
+- **Lint/格式**：`ruff check src tests examples` 与 `ruff format --check src tests examples` 全部通过（47 个文件）。
 - **依赖安全**：`uvx pip-audit` 报告 **No known vulnerabilities found**（`cryptography>=50,<51`，dev 额外依赖 `pytest 9.0.3+`）。
 - **静态安全扫描**：`uvx bandit -c pyproject.toml -q -r src` 无输出；仅在 `pyproject.toml` 中跳过 B105（把环境变量**名称**误判为硬编码密码）。
-- **构建**：`python -m build` 成功生成 0.2.0 的 sdist 与 wheel；wheel 共 38 个文件，包含 `api_access.py`/`api_connections.py`/`secrets.py` 与 Web 资源，不含 tests、data、docs 或模型权重。
-- **独立安装**：在全新 venv 安装 0.2.0 wheel，`dounai-input doctor` 可运行，`/healthz` 返回 `version=0.2.0`、schema v3（见 5.7）。
+- **构建**：`python -m build` 成功生成 0.2.1 的 sdist 与 wheel；wheel 共 38 个文件，包含 `api_access.py`/`api_connections.py`/`secrets.py` 与 Web 资源，不含 tests、data、docs 或模型权重。
+- **独立安装**：在全新 venv 安装 0.2.1 wheel，`dounai-input doctor` 可运行，`/healthz` 返回 `version=0.2.1`、schema v3（见 5.7）。
+- **跨仓库契约（0.2.1）**：所有响应新增 `X-Dounai-Contract-Version` / `X-Dounai-Module-Version`；错误体新增 `retryable` 与 `request_id`，`/v1/contract` 保持纯 JSON Schema。新增 `test_error_contract.py` 10 项覆盖，见 5.8。
 - **真实本地模型**：下载并校验 `faster-whisper` tiny/small；在 Windows SAPI 合成中文语音上完成“语音 → 本地 ASR → 事件 → 声纹唤醒”的端到端验证。
 - **API 接入**：新增“用户填 Base URL + API Key → 发现模型 → 逐项实测能力 → 保存为动态 provider”的完整链路，已用本地 mock 厂商做 HTTP 与浏览器两层实测；**未调用真实第三方厂商**（无计费密钥，也不应把测试音频发出去）。
 - **浏览器 E2E**：Edge + Playwright 走通「添加 API 连接 → 发现 3 个模型 → 探测 → 保存 → 切换 → 刷新后保持 → 移除模型回退 offline → 删除连接」，无 JS 错误、无横向溢出、页面中检索不到测试 Key。
@@ -79,7 +80,8 @@
 | 插件/模型 `test_plugins.py` | 12 | entry point、目录插件、禁用、冲突、安装失败、校验/卸载 | 通过 |
 | UI `test_ui.py` | 5 | CSP、静态资源、DOM ID、Node 语法、政策打包 | 通过 |
 | CLI `test_cli.py` | 9 | 列表、状态、授权、导出/删除、doctor、错误处理 | 通过 |
-| **合计** | **164** | | **全部通过** |
+| 跨仓库契约 `test_error_contract.py` | 10 | 双版本响应头、错误体 `retryable`/`request_id`、401/403/422/502/500 映射、`/v1/contract` 形状不变 | 通过 |
+| **合计** | **174** | | **全部通过** |
 
 ## 4. 故障注入结果
 
@@ -214,7 +216,21 @@ Edge headless（1440×1200）在默认 `offline` 配置下实际执行：
 
 ### 5.7 独立安装
 
-在全新 venv（Python 3.12）安装 0.2.0 wheel，运行 `dounai-input doctor` 可正常输出环境检查；`/healthz` 返回 `version=0.2.0`、`contract_version=1.1`，数据库 `schema_meta.schema_version=3`。wheel 含 Web 资源与新模块，未包含 tests/data/docs。
+在全新 venv（Python 3.12）安装 0.2.1 wheel，运行 `dounai-input doctor` 可正常输出环境检查；`/healthz` 返回 `version=0.2.1`、`contract_version=1.1`，数据库 `schema_meta.schema_version=3`。wheel 含 Web 资源与新模块，未包含 tests/data/docs。
+
+### 5.8 跨仓库契约实测（0.2.1）
+
+| 检查 | 实际结果 |
+| --- | --- |
+| `GET /healthz` | `contract_version=1.1`，响应头带 `X-Dounai-Contract-Version: 1.1` 与 `X-Dounai-Module-Version: 0.2.1` |
+| `GET /v1/contract` | 返回体与 `schemas/input-event.schema.json` 完全一致，仍只有 `x-contract-version`，未混入模块版本 |
+| 422 参数校验 | `{code: invalid_request, retryable: false, request_id, fields}` |
+| 403 跨站写 | `{code: forbidden_origin, retryable: false, request_id}` |
+| 401 缺 Token | `{code: unauthorized, retryable: false, request_id}` |
+| 502 发现失败 | `{code: api_discovery_failed, retryable: true}` |
+| 500 未预期错误 | `{code: internal_error, retryable: true}`，响应不含异常正文 |
+
+对消费方的建议：同主版本降级告警、主版本不同拒绝；错误体按 `retryable` 决定是否重试，`request_id` 直接用于日志关联，不再维护按码推断表。
 
 ## 6. 根因分析（重点）
 
@@ -578,7 +594,7 @@ curl -s -X POST http://127.0.0.1:8766/v1/api-connections/probe \
 - 未配置 ASR 时上传 WAV：事件 `asr_status="unavailable"`、界面显示「转写不可用」；
 - API 接入：发现 3 个模型、逐项探测、保存、切换、刷新保持、移除回退、删除连接全部通过，无 JS 错误、无横向溢出、页面无 Key；
 - 媒体 base64 接口、事件媒体接口、契约 v1.1 断言均通过；
-- 全新 venv 安装 0.2.0 wheel 后 `doctor` 与 `/healthz`（version 0.2.0、schema v3）通过。
+- 全新 venv 安装 0.2.1 wheel 后 `doctor` 与 `/healthz`（version 0.2.1、schema v3）通过。
 
 ## 11. 仓库清洁声明
 
