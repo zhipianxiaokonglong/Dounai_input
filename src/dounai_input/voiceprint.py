@@ -14,6 +14,7 @@ Privacy invariants enforced here:
 from __future__ import annotations
 
 import io
+import logging
 import unicodedata
 import wave
 from dataclasses import dataclass
@@ -21,6 +22,8 @@ from dataclasses import dataclass
 import numpy as np
 
 from .store import Store, VoiceprintRecord
+
+logger = logging.getLogger(__name__)
 
 SAMPLE_RATE = 16_000
 FRAME_LENGTH = 400  # 25 ms
@@ -47,6 +50,54 @@ class VoiceprintEnrollment:
     sample_count: int
     dimension: int
     created_at: str
+
+
+def ensure_wav_bytes(data: bytes, mime: str | None = None) -> bytes | None:
+    """Return 16 kHz mono PCM WAV bytes, converting compressed audio if needed.
+
+    The desktop client records WebM/Opus, while enrollment samples are WAV.
+    Voiceprint must behave the same for both, otherwise ``voiceprint_event``
+    can never become ``wakeup`` from the floating window.  PyAV is a core
+    dependency, so conversion stays local and never sends audio to a provider.
+    """
+
+    if data[:4] == b"RIFF" and data[8:12] == b"WAVE":
+        return data
+
+    try:
+        import av
+    except ImportError:  # pragma: no cover - packaging guarantees this in prod
+        logger.warning("voiceprint conversion unavailable: PyAV is not installed")
+        return None
+
+    try:
+        chunks: list[np.ndarray] = []
+        with av.open(io.BytesIO(data)) as container:
+            if not container.streams.audio:
+                return None
+            resampler = av.AudioResampler(format="s16", layout="mono", rate=SAMPLE_RATE)
+            for frame in container.decode(audio=0):
+                for converted in resampler.resample(frame) or ():
+                    chunks.append(converted.to_ndarray().reshape(-1))
+            for converted in resampler.resample(None) or ():
+                chunks.append(converted.to_ndarray().reshape(-1))
+
+        if not chunks:
+            return None
+        samples = np.concatenate(chunks)
+        if samples.dtype != np.int16:
+            samples = samples.astype(np.int16)
+
+        buffer = io.BytesIO()
+        with wave.open(buffer, "wb") as handle:
+            handle.setnchannels(1)
+            handle.setsampwidth(2)
+            handle.setframerate(SAMPLE_RATE)
+            handle.writeframes(samples.tobytes())
+        return buffer.getvalue()
+    except Exception as exc:  # malformed/unsupported container: keep text path alive
+        logger.warning("voiceprint audio conversion failed: %s", type(exc).__name__)
+        return None
 
 
 def decode_wav(data: bytes) -> tuple[np.ndarray, int]:

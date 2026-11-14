@@ -10,7 +10,7 @@
 
 ## 1. 结论摘要
 
-- **自动化测试：174 passed，0 failed**（`pytest -q`，约 46 s；带覆盖率约 74 s）。
+- **自动化测试：180 passed，0 failed**（`pytest -q`，约 46 s；带覆盖率约 74 s）。
 - **总覆盖率：80%**（语句/分支综合；`store` 95%、`api` 93%、`secrets` 87%、`api_access` 79%、`api_connections` 79%、`events`/`errors` 100%）。
 - **Lint/格式**：`ruff check src tests examples` 与 `ruff format --check src tests examples` 全部通过（47 个文件）。
 - **依赖安全**：`uvx pip-audit` 报告 **No known vulnerabilities found**（`cryptography>=50,<51`，dev 额外依赖 `pytest 9.0.3+`）。
@@ -81,7 +81,7 @@
 | UI `test_ui.py` | 5 | CSP、静态资源、DOM ID、Node 语法、政策打包 | 通过 |
 | CLI `test_cli.py` | 9 | 列表、状态、授权、导出/删除、doctor、错误处理 | 通过 |
 | 跨仓库契约 `test_error_contract.py` | 10 | 双版本响应头、错误体 `retryable`/`request_id`、401/403/422/502/500 映射、`/v1/contract` 形状不变 | 通过 |
-| **合计** | **174** | | **全部通过** |
+| **合计** | **180** | | **全部通过** |
 
 ## 4. 故障注入结果
 

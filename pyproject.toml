@@ -25,6 +25,10 @@ classifiers = [
   "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 dependencies = [
+  # PyAV 19 removed the metadata_errors kwarg that faster-whisper 1.2.x still
+  # passes to av.open. Keep decoding on a compatible PyAV until upstream fixes it.
+  # It also converts WebM/Opus voice recordings to WAV for voiceprint checks.
+  "av>=11,<19",
   "cryptography>=50,<51",
   "fastapi>=0.115,<1",
   "httpx>=0.28,<1",
@@ -44,9 +48,6 @@ keyring = [
 local-asr = [
   "faster-whisper>=1.1,<2",
   "huggingface-hub>=0.27,<2",
-  # PyAV 19 removed the metadata_errors kwarg that faster-whisper 1.2.x still
-  # passes to av.open. Keep decoding on a compatible PyAV until upstream fixes it.
-  "av>=11,<19",
 ]
 dev = [
   "build>=1.2,<2",

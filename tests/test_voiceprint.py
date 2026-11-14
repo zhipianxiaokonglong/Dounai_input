@@ -13,11 +13,40 @@ from dounai_input.services import create_services
 from dounai_input.voiceprint import (
     VoiceprintQualityError,
     cosine_similarity,
+    ensure_wav_bytes,
     extract_features,
     normalize_wake_phrase,
 )
 from tests.conftest import make_settings
 from tests.helpers import silence_wav, synthetic_voice
+
+
+def _to_webm(wav_bytes: bytes) -> bytes:
+    """Encode a WAV clip as WebM/Opus, matching the desktop MediaRecorder."""
+
+    av = pytest.importorskip("av")
+    import io
+
+    output = io.BytesIO()
+    with av.open(io.BytesIO(wav_bytes)) as source, av.open(output, "w", format="webm") as target:
+        input_stream = source.streams.audio[0]
+        output_stream = target.add_stream("libopus", rate=16_000)
+        output_stream.layout = "mono"
+        resampler = av.AudioResampler(format="s16", layout="mono", rate=16_000)
+
+        def mux(frame) -> None:
+            frame.sample_rate = 16_000
+            for packet in output_stream.encode(frame):
+                target.mux(packet)
+
+        for frame in source.decode(input_stream):
+            for converted in resampler.resample(frame) or ():
+                mux(converted)
+        for converted in resampler.resample(None) or ():
+            mux(converted)
+        for packet in output_stream.encode():
+            target.mux(packet)
+    return output.getvalue()
 
 
 def test_same_speaker_is_closer_than_different_speaker() -> None:
@@ -153,6 +182,50 @@ def test_api_enrollment_and_wakeup(tmp_path) -> None:
         status = client.get("/v1/privacy/status").json()
         assert status["data"]["media_files"] == 1  # only the audio event, not enroll samples
         assert status["enrolled"] is True
+
+
+def test_api_webm_wakeup_is_converted_to_wav(tmp_path) -> None:
+    """The desktop records WebM; voiceprint must work for that container too."""
+
+    pytest.importorskip("av")
+    settings = replace(
+        make_settings(tmp_path),
+        wake_phrase_required=False,
+        voiceprint_threshold=0.82,
+    )
+    with TestClient(build_app(settings)) as client:
+        client.post("/v1/privacy/consent", json={"policy_version": "1.0", "granted": True})
+        samples = [synthetic_voice(seed=1), synthetic_voice(seed=2), synthetic_voice(seed=3)]
+        enrolled = client.post(
+            "/v1/privacy/voiceprint/enroll",
+            files=[
+                ("files", (f"sample-{index}.wav", sample, "audio/wav"))
+                for index, sample in enumerate(samples)
+            ],
+        )
+        assert enrolled.status_code == 200, enrolled.text
+
+        webm = _to_webm(synthetic_voice(seed=9))
+        audio = client.post(
+            "/v1/inputs/audio",
+            files={"file": ("voice.webm", webm, "audio/webm")},
+        )
+        assert audio.status_code == 201
+        assert audio.json()["metadata"]["voiceprint_event"] == "wakeup"
+        assert audio.headers["X-Dounai-Voiceprint-Checked"] == "true"
+
+
+def test_ensure_wav_passthrough_and_conversion() -> None:
+    wav = synthetic_voice(seed=4)
+    passthrough = ensure_wav_bytes(wav)
+    assert passthrough is not None
+    assert passthrough[:4] == b"RIFF"
+
+    pytest.importorskip("av")
+    converted = ensure_wav_bytes(_to_webm(wav))
+    assert converted is not None
+    assert converted[:4] == b"RIFF"
+    assert converted[8:12] == b"WAVE"
 
 
 def test_api_enrollment_requires_consent(client) -> None:

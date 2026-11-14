@@ -127,6 +127,7 @@ def load_directory_plugins(settings: Settings, registry: ProviderRegistry) -> No
 
 def build_registry(settings: Settings) -> ProviderRegistry:
     from .custom_http import CustomHttpProvider
+    from .deepseek import DeepSeekASRProvider
     from .local_whisper import LocalWhisperProvider
     from .offline import OfflineProvider
 
@@ -137,6 +138,7 @@ def build_registry(settings: Settings) -> ProviderRegistry:
             config, models_dir=settings.models_dir
         ),
         "custom-http": lambda config: CustomHttpProvider(config),
+        "deepseek": lambda config: DeepSeekASRProvider(config),
     }
     for provider_id, factory in factories.items():
         config = settings.provider_config(provider_id)

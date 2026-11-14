@@ -17,7 +17,7 @@ from .media import MediaService, normalize_session_id, normalize_source
 from .providers.base import ProviderAttempt, TranscriptionOutcome, TranscriptionRequest
 from .providers.manager import ProviderManager
 from .store import Store
-from .voiceprint import VoiceprintService
+from .voiceprint import VoiceprintService, ensure_wav_bytes
 
 logger = logging.getLogger(__name__)
 
@@ -169,15 +169,17 @@ class IngestService:
 
         voiceprint_event = "none"
         voiceprint_checked = False
-        if record.mime == "audio/wav" and self.voiceprint.enabled and self.voiceprint.usable:
+        if self.voiceprint.enabled and self.voiceprint.usable and (record.mime or "").startswith("audio/"):
             try:
                 audio_bytes = await asyncio.to_thread(
                     (Path(self.settings.media_dir) / record.path).read_bytes
                 )
-                voiceprint_event = await asyncio.to_thread(
-                    self.voiceprint.detect, audio_bytes, outcome.text
-                )
-                voiceprint_checked = True
+                wav_bytes = await asyncio.to_thread(ensure_wav_bytes, audio_bytes, record.mime)
+                if wav_bytes is not None:
+                    voiceprint_event = await asyncio.to_thread(
+                        self.voiceprint.detect, wav_bytes, outcome.text
+                    )
+                    voiceprint_checked = True
             except Exception as exc:
                 logger.warning("voiceprint check failed: %s", type(exc).__name__)
 

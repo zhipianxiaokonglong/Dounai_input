@@ -67,3 +67,13 @@ model = "my-private-asr"
 # 自有服务运行在同一台设备/内网时可设为 local；默认按远程处理。
 privacy = "remote"
 timeout_seconds = 30
+
+[providers.deepseek]
+# DeepSeek official ASR tool API; key is read from DEEPSEEK_API_KEY.
+# To make it the default, set [models] active = "deepseek".
+enabled = true
+base_url = "https://api.deepseek.com"
+api_key_env = "DEEPSEEK_API_KEY"
+timeout_seconds = 60
+max_bytes = 8388608
+max_seconds = 120

@@ -37,6 +37,14 @@ _DEFAULT_PROVIDERS: dict[str, dict[str, Any]] = {
         "token_env": "DOUNAI_CUSTOM_HTTP_TOKEN",
         "timeout_seconds": 30,
     },
+    "deepseek": {
+        "enabled": True,
+        "base_url": "https://api.deepseek.com",
+        "api_key_env": "DEEPSEEK_API_KEY",
+        "timeout_seconds": 60,
+        "max_bytes": 8 * 1024 * 1024,
+        "max_seconds": 120,
+    },
 }
 
 

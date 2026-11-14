@@ -97,7 +97,10 @@ def test_missing_config_file_is_an_error(tmp_path: Path) -> None:
         load_settings(tmp_path / "does-not-exist.toml")
 
 
-def test_example_config_parses(tmp_path: Path) -> None:
+def test_example_config_parses(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # A CLI test may have loaded the developer's local .env into os.environ;
+    # this test verifies the example file itself, not local overrides.
+    monkeypatch.delenv("DOUNAI_ACTIVE_PROVIDER", raising=False)
     example = Path(__file__).resolve().parents[1] / "dounai.example.toml"
     settings = load_settings(example)
     assert settings.default_active_provider == "offline"
