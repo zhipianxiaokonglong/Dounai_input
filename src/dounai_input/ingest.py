@@ -169,7 +169,11 @@ class IngestService:
 
         voiceprint_event = "none"
         voiceprint_checked = False
-        if self.voiceprint.enabled and self.voiceprint.usable and (record.mime or "").startswith("audio/"):
+        if (
+            self.voiceprint.enabled
+            and self.voiceprint.usable
+            and (record.mime or "").startswith("audio/")
+        ):
             try:
                 audio_bytes = await asyncio.to_thread(
                     (Path(self.settings.media_dir) / record.path).read_bytes
